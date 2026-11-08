@@ -1,2 +1,2 @@
 # narvik
-Backup automation for IBM Storage Protect
+Backup automation for IBM Storage Protect for VMWare on Windows Server
