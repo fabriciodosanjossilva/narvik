@@ -1,0 +1,19 @@
+{
+  "log_level": "Info",
+  "dsmc_path": "C:\\Program Files\\IBM\\Spectrum Protect\\dsmcad\\dsmc.exe",
+  "dsmc_use_preview": true,
+  "vcenter_server": "vcenter.example.local",
+  "vcenter_user": "narvik@example.local",
+  "vcenter_password_file": "secrets\\vcenter_password.txt",
+  "vcenter_ignore_certificate": false,
+  "smtp_server": "mail.example.local",
+  "smtp_port": 25,
+  "smtp_use_ssl": false,
+  "smtp_username": "",
+  "smtp_password_file": "",
+  "mail_from": "narvik@example.local",
+  "mail_to": [
+    "backup-admins@example.local"
+  ],
+  "max_backup_threads": 2
+}
