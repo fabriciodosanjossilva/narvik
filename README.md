@@ -1,2 +1,2 @@
 # narvik
-Backup automation for IBM Storage Protrect
+Backup automation for IBM Storage Protect
