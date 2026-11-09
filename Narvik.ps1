@@ -461,6 +461,7 @@ function Import-NarvikConfig {
         'vcenter_user',
         'vcenter_password_file',
         'vcenter_ignore_certificate',
+        'dont_backup_by_snapshot_tag_name',
         'smtp_server',
         'smtp_port',
         'smtp_use_ssl',
@@ -514,6 +515,8 @@ function Import-NarvikConfig {
     }
 
     $vcenterIgnoreCertificate = ConvertTo-NarvikBoolean -Value (Get-NarvikConfigValue -Config $config -Key 'vcenter_ignore_certificate' -Default $false) -KeyName 'vcenter_ignore_certificate'
+
+    $dontBackupBySnapshotTagName = [string](Get-NarvikConfigValue -Config $config -Key 'dont_backup_by_snapshot_tag_name')
 
     $smtpServer = [string](Get-NarvikConfigValue -Config $config -Key 'smtp_server' -Required)
     if ([string]::IsNullOrWhiteSpace($smtpServer)) {
@@ -587,21 +590,22 @@ function Import-NarvikConfig {
     }
 
     return [pscustomobject]@{
-        log_level                  = $logLevel
-        dsmc_path                  = $dsmcPath
-        dsmc_use_preview           = $dsmcUsePreview
-        vcenter_server             = $vcenterServer
-        vcenter_user               = $vcenterUser
-        vcenter_password_file      = $vcenterPasswordFile
-        vcenter_ignore_certificate = $vcenterIgnoreCertificate
-        smtp_server                = $smtpServer
-        smtp_port                  = $smtpPort
-        smtp_use_ssl               = $smtpUseSsl
-        smtp_username              = $smtpUsername
-        smtp_password_file         = $smtpPasswordFile
-        mail_from                  = $mailFrom
-        mail_to                    = $mailTo
-        max_backup_threads         = $maxThreads
+        log_level                        = $logLevel
+        dsmc_path                        = $dsmcPath
+        dsmc_use_preview                 = $dsmcUsePreview
+        vcenter_server                   = $vcenterServer
+        vcenter_user                     = $vcenterUser
+        vcenter_password_file            = $vcenterPasswordFile
+        vcenter_ignore_certificate       = $vcenterIgnoreCertificate
+        dont_backup_by_snapshot_tag_name = $dontBackupBySnapshotTagName
+        smtp_server                      = $smtpServer
+        smtp_port                        = $smtpPort
+        smtp_use_ssl                     = $smtpUseSsl
+        smtp_username                    = $smtpUsername
+        smtp_password_file               = $smtpPasswordFile
+        mail_from                        = $mailFrom
+        mail_to                          = $mailTo
+        max_backup_threads               = $maxThreads
     }
 }
 
@@ -1770,6 +1774,8 @@ function Update-NarvikEligibility {
         [switch]$SendAlerts
     )
 
+    $snapshotTagName = [string]$script:Config.dont_backup_by_snapshot_tag_name
+
     if ($null -eq $script:VCache) {
         $script:EligibleVMs = @()
         $script:NonEligibleVMs = @()
@@ -1800,8 +1806,8 @@ function Update-NarvikEligibility {
             }
         }
 
-        if (Test-NarvikTagPresent -Tags $vm.Tags -TagName 'NAO_FAZER_BACKUP_POR_SNAPSHOT') {
-            Add-NarvikReason -Reasons $reasons -Reason "VM tag 'NAO_FAZER_BACKUP_POR_SNAPSHOT'"
+        if (-not [string]::IsNullOrWhiteSpace($snapshotTagName) -and (Test-NarvikTagPresent -Tags $vm.Tags -TagName $snapshotTagName)) {
+            Add-NarvikReason -Reasons $reasons -Reason "VM tag '$snapshotTagName'"
         }
 
         foreach ($disk in @($vm.Disks)) {
@@ -1813,16 +1819,16 @@ function Update-NarvikEligibility {
 
             if ($datastoreByName.ContainsKey($datastoreName)) {
                 $datastore = $datastoreByName[$datastoreName]
-                if (Test-NarvikTagPresent -Tags $datastore.Tags -TagName 'NAO_FAZER_BACKUP_POR_SNAPSHOT') {
-                    Add-NarvikReason -Reasons $reasons -Reason "Datastore '$datastoreName' tag 'NAO_FAZER_BACKUP_POR_SNAPSHOT'"
+                if (-not [string]::IsNullOrWhiteSpace($snapshotTagName) -and (Test-NarvikTagPresent -Tags $datastore.Tags -TagName $snapshotTagName)) {
+                    Add-NarvikReason -Reasons $reasons -Reason "Datastore '$datastoreName' tag '$snapshotTagName'"
                 }
             }
 
             $clusterName = [string]$disk.DatastoreCluster
             if (-not [string]::IsNullOrWhiteSpace($clusterName) -and $clusterByName.ContainsKey($clusterName)) {
                 $cluster = $clusterByName[$clusterName]
-                if (Test-NarvikTagPresent -Tags $cluster.Tags -TagName 'NAO_FAZER_BACKUP_POR_SNAPSHOT') {
-                    Add-NarvikReason -Reasons $reasons -Reason "Datastore cluster '$clusterName' tag 'NAO_FAZER_BACKUP_POR_SNAPSHOT'"
+                if (-not [string]::IsNullOrWhiteSpace($snapshotTagName) -and (Test-NarvikTagPresent -Tags $cluster.Tags -TagName $snapshotTagName)) {
+                    Add-NarvikReason -Reasons $reasons -Reason "Datastore cluster '$clusterName' tag '$snapshotTagName'"
                 }
             }
         }

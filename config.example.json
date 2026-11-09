@@ -6,6 +6,7 @@
   "vcenter_user": "narvik@example.local",
   "vcenter_password_file": "secrets\\vcenter_password.txt",
   "vcenter_ignore_certificate": false,
+  "dont_backup_by_snapshot_tag_name": "",
   "smtp_server": "mail.example.local",
   "smtp_port": 25,
   "smtp_use_ssl": false,
