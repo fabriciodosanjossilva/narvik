@@ -464,6 +464,7 @@ function Import-NarvikConfig {
 
     $knownKeys = @(
         'log_level',
+        'check_administrator_privilege',
         'dsmc_path',
         'dsmc_use_preview',
         'vcenter_server',
@@ -502,6 +503,8 @@ function Import-NarvikConfig {
     if (-not (Test-Path -LiteralPath $dsmcPath -PathType Leaf)) {
         throw [System.Exception]::new("dsmc executable not found: '$dsmcPath'.")
     }
+
+    $checkAdministratorPrivilege = ConvertTo-NarvikBoolean -Value (Get-NarvikConfigValue -Config $config -Key 'check_administrator_privilege' -Default $false) -KeyName 'check_administrator_privilege'
 
     $dsmcUsePreview = ConvertTo-NarvikBoolean -Value (Get-NarvikConfigValue -Config $config -Key 'dsmc_use_preview' -Default $true) -KeyName 'dsmc_use_preview'
 
@@ -620,6 +623,7 @@ function Import-NarvikConfig {
 
     return [pscustomobject]@{
         log_level                             = $logLevel
+        check_administrator_privilege         = $checkAdministratorPrivilege
         dsmc_path                             = $dsmcPath
         dsmc_use_preview                      = $dsmcUsePreview
         vcenter_server                        = $vcenterServer
@@ -1294,10 +1298,6 @@ function Initialize-Narvik {
         Throw-NarvikFatal -Message "Narvik requires Windows PowerShell 5.1; detected version $($PSVersionTable.PSVersion)." -Code 1
     }
 
-    if (-not (Test-NarvikIsAdministrator)) {
-        Throw-NarvikFatal -Message 'Narvik must run as NT AUTHORITY\SYSTEM or as a member of the Administrators group.' -Code 1
-    }
-
     try {
         $script:RootPath = [System.IO.Path]::GetFullPath($rootValue)
     }
@@ -1332,6 +1332,15 @@ function Initialize-Narvik {
     Load-NarvikIndependentDisks
 
     Update-NarvikRuntimeConfig
+
+    if ($script:Config.check_administrator_privilege) {
+        if (-not (Test-NarvikIsAdministrator)) {
+            Throw-NarvikFatal -Message 'Narvik must run as NT AUTHORITY\SYSTEM or as a member of the Administrators group.' -Code 1
+        }
+    }
+    else {
+        Write-NarvikLog -Level INFO -Message 'Administrator privilege check is disabled by configuration.'
+    }
 
     $powerCliModule = Get-Module -ListAvailable -Name 'VMware.VimAutomation.Core' | Select-Object -First 1
     if ($null -eq $powerCliModule) {
