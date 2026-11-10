@@ -3189,8 +3189,8 @@ function Stop-NarvikActiveJobs {
 }
 
 function Invoke-NarvikControlFiles {
-    $abortFile = Join-Path $script:ControlDir 'abort.txt'
-    $stopFile = Join-Path $script:ControlDir 'stop.txt'
+    $abortFile = Join-Path $script:RootPath 'abort.txt'
+    $stopFile = Join-Path $script:RootPath 'stop.txt'
 
     if (Test-Path -LiteralPath $abortFile -PathType Leaf) {
         $script:AbortRequested = $true
