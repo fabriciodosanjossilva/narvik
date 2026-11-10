@@ -1,12 +1,16 @@
 {
   "log_level": "Info",
-  "dsmc_path": "C:\\Program Files\\IBM\\Spectrum Protect\\dsmcad\\dsmc.exe",
+  "dsmc_path": "C:\\Program Files\\Tivoli\\TSM\\baclient\\dsmc.exe",
   "dsmc_use_preview": true,
   "vcenter_server": "vcenter.example.local",
   "vcenter_user": "narvik@example.local",
-  "vcenter_password_file": "secrets\\vcenter_password.txt",
+  "vcenter_password_file": "vcenter_password.txt",
   "vcenter_ignore_certificate": false,
   "dont_backup_by_snapshot_tag_name": "",
+  "datastore_cluster_to_management_class": {
+    "DatastoreCluster-01": "MGMT_CLASS_1",
+    "DatastoreCluster-02": "MGMT_CLASS_2"
+  },
   "smtp_server": "mail.example.local",
   "smtp_port": 25,
   "smtp_use_ssl": false,

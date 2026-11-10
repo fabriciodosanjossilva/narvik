@@ -43,11 +43,16 @@ $script:VCenterFingerprint = $null
 $script:VCache = $null
 $script:VCacheRefreshedThisLoop = $false
 $script:LastVCenterAttempt = [datetime]::MinValue
-$script:ActiveJobs = New-Object 'System.Collections.Generic.List[object]'
+# Windows PowerShell 5.1 wraps the output of New-Object in a PSObject; '@(...)' over a
+# wrapped List[object] then fails with "Argument types do not match". ::new() avoids that.
+$script:ActiveJobs = [System.Collections.Generic.List[object]]::new()
 $script:EligibleVMs = @()
 $script:NonEligibleVMs = @()
 $script:PendingVMs = @()
 $script:DuplicateNameCases = @()
+$script:UnsupportedNameCases = @()
+$script:DatastoreClusterCases = @()
+$script:ManagementClassCases = @()
 $script:LastFull = @{}
 $script:IndependentDisks = @()
 $script:DuplicateGuid = @{}
@@ -56,6 +61,7 @@ $script:State = @{
     duplicate_guid = @()
     last_idle = $null
     duplicate_name_alerts = @{}
+    inventory_rule_alerts = @{}
 }
 $script:ProcessLockStream = $null
 $script:ProcessLockFile = $null
@@ -462,6 +468,7 @@ function Import-NarvikConfig {
         'vcenter_password_file',
         'vcenter_ignore_certificate',
         'dont_backup_by_snapshot_tag_name',
+        'datastore_cluster_to_management_class',
         'smtp_server',
         'smtp_port',
         'smtp_use_ssl',
@@ -517,6 +524,25 @@ function Import-NarvikConfig {
     $vcenterIgnoreCertificate = ConvertTo-NarvikBoolean -Value (Get-NarvikConfigValue -Config $config -Key 'vcenter_ignore_certificate' -Default $false) -KeyName 'vcenter_ignore_certificate'
 
     $dontBackupBySnapshotTagName = [string](Get-NarvikConfigValue -Config $config -Key 'dont_backup_by_snapshot_tag_name')
+
+    $datastoreClusterToManagementClass = @{}
+    $managementClassValue = Get-NarvikConfigValue -Config $config -Key 'datastore_cluster_to_management_class'
+    if ($null -ne $managementClassValue) {
+        if ($managementClassValue -is [string] -or $managementClassValue -is [array] -or $managementClassValue -is [ValueType]) {
+            throw [System.Exception]::new("Configuration key 'datastore_cluster_to_management_class' must be an object mapping datastore cluster names to management class names.")
+        }
+        foreach ($property in $managementClassValue.PSObject.Properties) {
+            $clusterName = ([string]$property.Name).Trim()
+            $managementClass = ([string]$property.Value).Trim()
+            if ([string]::IsNullOrWhiteSpace($clusterName)) {
+                throw [System.Exception]::new("Configuration key 'datastore_cluster_to_management_class' contains an empty datastore cluster name.")
+            }
+            if ([string]::IsNullOrWhiteSpace($managementClass)) {
+                throw [System.Exception]::new("Configuration key 'datastore_cluster_to_management_class' contains an empty management class for datastore cluster '$clusterName'.")
+            }
+            $datastoreClusterToManagementClass[$clusterName.ToLowerInvariant()] = $managementClass
+        }
+    }
 
     $smtpServer = [string](Get-NarvikConfigValue -Config $config -Key 'smtp_server' -Required)
     if ([string]::IsNullOrWhiteSpace($smtpServer)) {
@@ -590,22 +616,23 @@ function Import-NarvikConfig {
     }
 
     return [pscustomobject]@{
-        log_level                        = $logLevel
-        dsmc_path                        = $dsmcPath
-        dsmc_use_preview                 = $dsmcUsePreview
-        vcenter_server                   = $vcenterServer
-        vcenter_user                     = $vcenterUser
-        vcenter_password_file            = $vcenterPasswordFile
-        vcenter_ignore_certificate       = $vcenterIgnoreCertificate
-        dont_backup_by_snapshot_tag_name = $dontBackupBySnapshotTagName
-        smtp_server                      = $smtpServer
-        smtp_port                        = $smtpPort
-        smtp_use_ssl                     = $smtpUseSsl
-        smtp_username                    = $smtpUsername
-        smtp_password_file               = $smtpPasswordFile
-        mail_from                        = $mailFrom
-        mail_to                          = $mailTo
-        max_backup_threads               = $maxThreads
+        log_level                             = $logLevel
+        dsmc_path                             = $dsmcPath
+        dsmc_use_preview                      = $dsmcUsePreview
+        vcenter_server                        = $vcenterServer
+        vcenter_user                          = $vcenterUser
+        vcenter_password_file                 = $vcenterPasswordFile
+        vcenter_ignore_certificate            = $vcenterIgnoreCertificate
+        dont_backup_by_snapshot_tag_name      = $dontBackupBySnapshotTagName
+        datastore_cluster_to_management_class = $datastoreClusterToManagementClass
+        smtp_server                           = $smtpServer
+        smtp_port                             = $smtpPort
+        smtp_use_ssl                          = $smtpUseSsl
+        smtp_username                         = $smtpUsername
+        smtp_password_file                    = $smtpPasswordFile
+        mail_from                             = $mailFrom
+        mail_to                               = $mailTo
+        max_backup_threads                    = $maxThreads
     }
 }
 
@@ -666,6 +693,7 @@ function Load-NarvikState {
         duplicate_guid        = @()
         last_idle             = $null
         duplicate_name_alerts = @{}
+        inventory_rule_alerts = @{}
     }
 
     $path = Join-Path $script:ControlDir 'state.json'
@@ -707,6 +735,15 @@ function Load-NarvikState {
                 }
             }
         }
+
+        if ($null -ne $object.inventory_rule_alerts) {
+            foreach ($property in $object.inventory_rule_alerts.PSObject.Properties) {
+                $parsed = ConvertFrom-NarvikIsoDate -Value ([string]$property.Value)
+                if ($null -ne $parsed) {
+                    $script:State.inventory_rule_alerts[$property.Name] = $parsed
+                }
+            }
+        }
     }
     catch {
         Write-NarvikLog -Level WARNING -Message "State file '$path' is invalid: $($_.Exception.Message)"
@@ -744,6 +781,11 @@ function Save-NarvikState {
         $duplicateAlerts[$name] = $script:State.duplicate_name_alerts[$name].ToString('o')
     }
 
+    $inventoryAlerts = @{}
+    foreach ($name in $script:State.inventory_rule_alerts.Keys) {
+        $inventoryAlerts[$name] = $script:State.inventory_rule_alerts[$name].ToString('o')
+    }
+
     $lastIdle = $null
     if ($null -ne $script:State.last_idle) {
         $lastIdle = $script:State.last_idle.ToString('o')
@@ -754,6 +796,7 @@ function Save-NarvikState {
         duplicate_guid        = @($script:DuplicateGuid.Keys | Sort-Object)
         last_idle             = $lastIdle
         duplicate_name_alerts = $duplicateAlerts
+        inventory_rule_alerts = $inventoryAlerts
     }
 
     $json = $object | ConvertTo-Json -Depth 10
@@ -1405,6 +1448,30 @@ function Get-NarvikFolderPath {
     return ($parts -join '/')
 }
 
+function Test-NarvikSiteRecoveryPlaceholder {
+    param(
+        $View
+    )
+
+    # VMware Live Site Recovery (formerly Site Recovery Manager) creates placeholder
+    # VMs at the recovery site. They are marked in vCenter through Config.ManagedBy
+    # with an extension key starting with 'com.vmware.vcDr' and type 'placeholderVm'.
+    if ($null -eq $View -or $null -eq $View.Config) {
+        return $false
+    }
+
+    $managedBy = $View.Config.ManagedBy
+    if ($null -eq $managedBy) {
+        return $false
+    }
+
+    if ([string]$managedBy.ExtensionKey -like 'com.vmware.vcDr*' -and [string]$managedBy.Type -ieq 'placeholderVm') {
+        return $true
+    }
+
+    return $false
+}
+
 function Get-NarvikVCenterData {
     $collectStart = Get-Date
     $connection = $null
@@ -1412,7 +1479,7 @@ function Get-NarvikVCenterData {
     try {
         $connection = Connect-NarvikVCenter
 
-        $vmViews = @(Get-View -ViewType VirtualMachine -Property Name, Config, Runtime, Parent -ErrorAction Stop | Where-Object { $null -ne $_ })
+        $vmViews = @(Get-View -ViewType VirtualMachine -Property Name, Config, Runtime, Parent, Datastore -ErrorAction Stop | Where-Object { $null -ne $_ })
         $dsViews = @(Get-View -ViewType Datastore -Property Name -ErrorAction Stop | Where-Object { $null -ne $_ })
         $podViews = @(Get-View -ViewType StoragePod -Property Name, ChildEntity -ErrorAction Stop | Where-Object { $null -ne $_ })
         $folderViews = @(Get-View -ViewType Folder -Property Name, Parent -ErrorAction Stop | Where-Object { $null -ne $_ })
@@ -1501,7 +1568,7 @@ function Get-NarvikVCenterData {
             }
         }
 
-        $datastores = New-Object 'System.Collections.Generic.List[object]'
+        $datastores = [System.Collections.Generic.List[object]]::new()
         foreach ($datastore in $dsViews) {
             [void]$datastores.Add([pscustomobject]@{
                 Name  = [string]$datastore.Name
@@ -1510,7 +1577,7 @@ function Get-NarvikVCenterData {
             })
         }
 
-        $datastoreClusters = New-Object 'System.Collections.Generic.List[object]'
+        $datastoreClusters = [System.Collections.Generic.List[object]]::new()
         foreach ($pod in $podViews) {
             $memberNames = New-Object 'System.Collections.Generic.List[string]'
             foreach ($child in @($pod.ChildEntity)) {
@@ -1527,14 +1594,17 @@ function Get-NarvikVCenterData {
             })
         }
 
-        $vms = New-Object 'System.Collections.Generic.List[object]'
+        $vms = [System.Collections.Generic.List[object]]::new()
         $notesParseWarnings = 0
 
         foreach ($vmView in $vmViews) {
             if ($null -eq $vmView.Config) {
                 continue
             }
-            if ($vmView.Config.Template) {
+
+            # VMware Live Site Recovery placeholders are ignored silently. Templates are
+            # kept in the inventory and remain subject to the normal eligibility rules.
+            if (Test-NarvikSiteRecoveryPlaceholder -View $vmView) {
                 continue
             }
 
@@ -1566,7 +1636,7 @@ function Get-NarvikVCenterData {
                 $notesParseWarnings++
             }
 
-            $disks = New-Object 'System.Collections.Generic.List[object]'
+            $disks = [System.Collections.Generic.List[object]]::new()
             $totalSizeGb = 0.0
 
             if ($null -ne $vmView.Config.Hardware -and $null -ne $vmView.Config.Hardware.Device) {
@@ -1649,16 +1719,42 @@ function Get-NarvikVCenterData {
                 }
             }
 
+            $vmClusterNames = New-Object 'System.Collections.Generic.List[string]'
+            $vmClusterKeys = @{}
+            foreach ($datastoreRef in @($vmView.Datastore)) {
+                if ($null -eq $datastoreRef) {
+                    continue
+                }
+
+                $datastoreId = [string]$datastoreRef.Value
+                if ([string]::IsNullOrWhiteSpace($datastoreId) -or -not $podByDatastore.ContainsKey($datastoreId)) {
+                    continue
+                }
+
+                $podName = [string]$podByDatastore[$datastoreId].Name
+                if ([string]::IsNullOrWhiteSpace($podName)) {
+                    continue
+                }
+
+                $podKey = $podName.ToLowerInvariant()
+                if (-not $vmClusterKeys.ContainsKey($podKey)) {
+                    $vmClusterKeys[$podKey] = $true
+                    [void]$vmClusterNames.Add($podName)
+                }
+            }
+
             [void]$vms.Add([pscustomobject]@{
-                Name        = $vmName
-                MoRef       = [string]$vmView.MoRef.Value
-                FolderPath  = Get-NarvikFolderPath -FolderId $folderId -FolderMap $folderMap
-                HostName    = $hostName
-                Tags        = @(Get-NarvikViewTags -View $vmView -TagMap $tagMap)
-                Notes       = $notes
-                LastBackup  = $lastBackup
-                TotalSizeGB = [math]::Round($totalSizeGb, 2)
-                Disks       = @($disks)
+                Name              = $vmName
+                MoRef             = [string]$vmView.MoRef.Value
+                FolderPath        = Get-NarvikFolderPath -FolderId $folderId -FolderMap $folderMap
+                HostName          = $hostName
+                Tags              = @(Get-NarvikViewTags -View $vmView -TagMap $tagMap)
+                Notes             = $notes
+                LastBackup        = $lastBackup
+                TotalSizeGB       = [math]::Round($totalSizeGb, 2)
+                DatastoreClusters = @($vmClusterNames | Sort-Object)
+                ManagementClass   = ''
+                Disks             = @($disks)
             })
         }
 
@@ -1769,17 +1865,46 @@ function Add-NarvikReason {
     }
 }
 
+function Get-NarvikManagementClass {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$DatastoreClusterName
+    )
+
+    if ([string]::IsNullOrWhiteSpace($DatastoreClusterName)) {
+        return ''
+    }
+
+    if ($null -eq $script:Config -or $null -eq $script:Config.datastore_cluster_to_management_class) {
+        return ''
+    }
+
+    $mapping = $script:Config.datastore_cluster_to_management_class
+    $key = $DatastoreClusterName.Trim().ToLowerInvariant()
+    if (-not $mapping.ContainsKey($key)) {
+        return ''
+    }
+
+    return [string]$mapping[$key]
+}
+
 function Update-NarvikEligibility {
     param(
         [switch]$SendAlerts
     )
 
     $snapshotTagName = [string]$script:Config.dont_backup_by_snapshot_tag_name
+    # Characters that cannot be used in a VM name for the dsmc backup command.
+    $unsupportedNamePattern = '[:;''"*?,<>/\\|\[\]}{]'
 
     if ($null -eq $script:VCache) {
         $script:EligibleVMs = @()
         $script:NonEligibleVMs = @()
         $script:DuplicateNameCases = @()
+        $script:UnsupportedNameCases = @()
+        $script:DatastoreClusterCases = @()
+        $script:ManagementClassCases = @()
         Write-NarvikMonitoringFiles
         return
     }
@@ -1794,11 +1919,52 @@ function Update-NarvikEligibility {
         $clusterByName[[string]$cluster.Name] = $cluster
     }
 
-    $initialEligible = New-Object 'System.Collections.Generic.List[object]'
-    $nonEligible = New-Object 'System.Collections.Generic.List[object]'
+    $initialEligible = [System.Collections.Generic.List[object]]::new()
+    $nonEligible = [System.Collections.Generic.List[object]]::new()
+    $unsupportedNameCases = [System.Collections.Generic.List[object]]::new()
+    $datastoreClusterCases = [System.Collections.Generic.List[object]]::new()
+    $managementClassCases = [System.Collections.Generic.List[object]]::new()
 
     foreach ($vm in @($script:VCache.VMs)) {
         $reasons = New-Object 'System.Collections.Generic.List[string]'
+
+        if ([string]$vm.Name -match $unsupportedNamePattern) {
+            Add-NarvikReason -Reasons $reasons -Reason 'VM name contains characters not supported by the backup command'
+            [void]$unsupportedNameCases.Add($vm)
+        }
+
+        $vmDatastoreClusters = @($vm.DatastoreClusters)
+        $managementClass = ''
+        if ($vmDatastoreClusters.Count -ne 1) {
+            if ($vmDatastoreClusters.Count -eq 0) {
+                Add-NarvikReason -Reasons $reasons -Reason 'VM is not associated with any datastore cluster (exactly one is required)'
+            }
+            else {
+                Add-NarvikReason -Reasons $reasons -Reason "VM is associated with $($vmDatastoreClusters.Count) datastore clusters ($($vmDatastoreClusters -join ', ')); exactly one is required"
+            }
+            [void]$datastoreClusterCases.Add([pscustomobject]@{
+                VM                = $vm
+                DatastoreClusters = $vmDatastoreClusters
+            })
+        }
+        else {
+            $datastoreClusterName = [string]$vmDatastoreClusters[0]
+            $managementClass = Get-NarvikManagementClass -DatastoreClusterName $datastoreClusterName
+            if ([string]::IsNullOrWhiteSpace($managementClass)) {
+                Add-NarvikReason -Reasons $reasons -Reason "Datastore cluster '$datastoreClusterName' has no management class mapping in 'datastore_cluster_to_management_class'"
+                [void]$managementClassCases.Add([pscustomobject]@{
+                    VM               = $vm
+                    DatastoreCluster = $datastoreClusterName
+                })
+            }
+        }
+
+        if ($vm.PSObject.Properties.Name -contains 'ManagementClass') {
+            $vm.ManagementClass = $managementClass
+        }
+        else {
+            Add-Member -InputObject $vm -NotePropertyName 'ManagementClass' -NotePropertyValue $managementClass
+        }
 
         foreach ($disk in @($vm.Disks)) {
             if ($disk.RDM) {
@@ -1844,7 +2010,7 @@ function Update-NarvikEligibility {
         }
     }
 
-    $duplicateCases = New-Object 'System.Collections.Generic.List[object]'
+    $duplicateCases = [System.Collections.Generic.List[object]]::new()
     $duplicateGroups = @($initialEligible | Group-Object -Property { $_.Name.ToLowerInvariant() } | Where-Object { $_.Count -gt 1 })
     $duplicateMorefs = @{}
 
@@ -1875,6 +2041,9 @@ function Update-NarvikEligibility {
     $script:EligibleVMs = @($finalEligible)
     $script:NonEligibleVMs = @($nonEligible)
     $script:DuplicateNameCases = @($duplicateCases)
+    $script:UnsupportedNameCases = @($unsupportedNameCases)
+    $script:DatastoreClusterCases = @($datastoreClusterCases)
+    $script:ManagementClassCases = @($managementClassCases)
 
     $signatureParts = New-Object 'System.Collections.Generic.List[string]'
     foreach ($entry in $script:NonEligibleVMs) {
@@ -1894,6 +2063,7 @@ function Update-NarvikEligibility {
 
     if ($SendAlerts) {
         Send-NarvikDuplicateNameAlerts
+        Send-NarvikInventoryRuleAlerts
         Update-NarvikIndependentDiskControl -SendAlerts
     }
 }
@@ -1912,7 +2082,7 @@ function Send-NarvikDuplicateNameAlerts {
     }
 
     $now = Get-Date
-    $dueCases = New-Object 'System.Collections.Generic.List[object]'
+    $dueCases = [System.Collections.Generic.List[object]]::new()
 
     foreach ($case in @($script:DuplicateNameCases)) {
         $key = ([string]$case.Name).ToLowerInvariant()
@@ -1964,6 +2134,151 @@ function Send-NarvikDuplicateNameAlerts {
     }
     else {
         Write-NarvikLog -Level ERROR -Message 'Duplicate VM name alert could not be sent; it will be retried on the next inventory collection.'
+    }
+}
+
+function Send-NarvikInventoryRuleAlerts {
+    $nameCases = @($script:UnsupportedNameCases)
+    $clusterCases = @($script:DatastoreClusterCases)
+    $managementClassCases = @($script:ManagementClassCases)
+    if ($nameCases.Count -eq 0 -and $clusterCases.Count -eq 0 -and $managementClassCases.Count -eq 0) {
+        return
+    }
+
+    $now = Get-Date
+    $dueNameCases = [System.Collections.Generic.List[object]]::new()
+    $dueClusterCases = [System.Collections.Generic.List[object]]::new()
+    $dueManagementClassCases = [System.Collections.Generic.List[object]]::new()
+
+    foreach ($vm in $nameCases) {
+        $key = ([string]$vm.Name).ToLowerInvariant()
+        $lastAlert = $null
+        if ($script:State.inventory_rule_alerts.ContainsKey($key)) {
+            $lastAlert = $script:State.inventory_rule_alerts[$key]
+        }
+
+        if ($null -ne $lastAlert) {
+            $ageHours = ($now - $lastAlert).TotalHours
+            if ($ageHours -lt 24) {
+                Write-NarvikLog -Level INFO -Message "VM '$($vm.Name)' with an unsupported name was already reported at $($lastAlert.ToString('yyyy-MM-dd HH:mm:ss')); alert suppressed for 24 hours."
+                continue
+            }
+        }
+
+        [void]$dueNameCases.Add($vm)
+    }
+
+    foreach ($case in $clusterCases) {
+        $vm = $case.VM
+        $key = ([string]$vm.Name).ToLowerInvariant()
+        $lastAlert = $null
+        if ($script:State.inventory_rule_alerts.ContainsKey($key)) {
+            $lastAlert = $script:State.inventory_rule_alerts[$key]
+        }
+
+        if ($null -ne $lastAlert) {
+            $ageHours = ($now - $lastAlert).TotalHours
+            if ($ageHours -lt 24) {
+                Write-NarvikLog -Level INFO -Message "VM '$($vm.Name)' with an invalid datastore cluster association was already reported at $($lastAlert.ToString('yyyy-MM-dd HH:mm:ss')); alert suppressed for 24 hours."
+                continue
+            }
+        }
+
+        [void]$dueClusterCases.Add($case)
+    }
+
+    foreach ($case in $managementClassCases) {
+        $vm = $case.VM
+        $key = ([string]$vm.Name).ToLowerInvariant()
+        $lastAlert = $null
+        if ($script:State.inventory_rule_alerts.ContainsKey($key)) {
+            $lastAlert = $script:State.inventory_rule_alerts[$key]
+        }
+
+        if ($null -ne $lastAlert) {
+            $ageHours = ($now - $lastAlert).TotalHours
+            if ($ageHours -lt 24) {
+                Write-NarvikLog -Level INFO -Message "VM '$($vm.Name)' with an unmapped datastore cluster was already reported at $($lastAlert.ToString('yyyy-MM-dd HH:mm:ss')); alert suppressed for 24 hours."
+                continue
+            }
+        }
+
+        [void]$dueManagementClassCases.Add($case)
+    }
+
+    if ($dueNameCases.Count -eq 0 -and $dueClusterCases.Count -eq 0 -and $dueManagementClassCases.Count -eq 0) {
+        return
+    }
+
+    $body = New-Object System.Text.StringBuilder
+    [void]$body.AppendLine('Narvik detected VMs that cannot be backed up because of their name, datastore cluster association or missing management class mapping.')
+    [void]$body.AppendLine('The following VMs were excluded from backup:')
+    [void]$body.AppendLine('')
+
+    if ($dueNameCases.Count -gt 0) {
+        [void]$body.AppendLine('VMs with names not supported by the backup command:')
+        [void]$body.AppendLine('')
+        foreach ($vm in $dueNameCases) {
+            [void]$body.AppendLine("Name: '$($vm.Name)'")
+            [void]$body.AppendLine("  - Folder: '$($vm.FolderPath)' | Host: '$($vm.HostName)' | MoRef: '$($vm.MoRef)'")
+            [void]$body.AppendLine('')
+        }
+    }
+
+    if ($dueClusterCases.Count -gt 0) {
+        [void]$body.AppendLine('VMs not associated with exactly one datastore cluster:')
+        [void]$body.AppendLine('')
+        foreach ($case in $dueClusterCases) {
+            $vm = $case.VM
+            $clusters = @($case.DatastoreClusters)
+            $clusterText = 'none'
+            if ($clusters.Count -gt 0) {
+                $clusterText = "'" + ($clusters -join "', '") + "'"
+            }
+            [void]$body.AppendLine("Name: '$($vm.Name)'")
+            [void]$body.AppendLine("  - Folder: '$($vm.FolderPath)' | Host: '$($vm.HostName)' | MoRef: '$($vm.MoRef)'")
+            [void]$body.AppendLine("  - Datastore clusters: $clusterText")
+            [void]$body.AppendLine('')
+        }
+    }
+
+    if ($dueManagementClassCases.Count -gt 0) {
+        [void]$body.AppendLine('VMs whose datastore cluster has no management class mapping:')
+        [void]$body.AppendLine('')
+        foreach ($case in $dueManagementClassCases) {
+            $vm = $case.VM
+            [void]$body.AppendLine("Name: '$($vm.Name)'")
+            [void]$body.AppendLine("  - Folder: '$($vm.FolderPath)' | Host: '$($vm.HostName)' | MoRef: '$($vm.MoRef)'")
+            [void]$body.AppendLine("  - Datastore cluster: '$($case.DatastoreCluster)'")
+            [void]$body.AppendLine('')
+        }
+    }
+
+    $subject = '[Narvik] VMs with unsupported names, datastore cluster associations or management class mappings - action required'
+    $sent = Send-NarvikMail -Subject $subject -Body $body.ToString()
+
+    if ($sent) {
+        $reportedKeys = @{}
+        foreach ($vm in $dueNameCases) {
+            $key = ([string]$vm.Name).ToLowerInvariant()
+            $script:State.inventory_rule_alerts[$key] = $now
+            $reportedKeys[$key] = $true
+        }
+        foreach ($case in $dueClusterCases) {
+            $key = ([string]$case.VM.Name).ToLowerInvariant()
+            $script:State.inventory_rule_alerts[$key] = $now
+            $reportedKeys[$key] = $true
+        }
+        foreach ($case in $dueManagementClassCases) {
+            $key = ([string]$case.VM.Name).ToLowerInvariant()
+            $script:State.inventory_rule_alerts[$key] = $now
+            $reportedKeys[$key] = $true
+        }
+        Save-NarvikState
+        Write-NarvikLog -Level INFO -Message "Unsupported name/datastore cluster/management class alert sent for $($reportedKeys.Count) VM(s)."
+    }
+    else {
+        Write-NarvikLog -Level ERROR -Message 'Unsupported name/datastore cluster/management class alert could not be sent; it will be retried on the next inventory collection.'
     }
 }
 
@@ -2185,7 +2500,7 @@ function Select-NarvikNextBackup {
         return $null
     }
 
-    $fullCandidates = New-Object 'System.Collections.Generic.List[object]'
+    $fullCandidates = [System.Collections.Generic.List[object]]::new()
     foreach ($vm in @($script:EligibleVMs)) {
         if (Test-NarvikVmActive -VmName $vm.Name) {
             continue
@@ -2557,10 +2872,21 @@ function Start-NarvikBackupJob {
     $duplicateGuid = $script:DuplicateGuid.ContainsKey($vm.Name)
     $isFull = [bool]$Selection.IsFull -or $duplicateGuid
 
+    $managementClass = ''
+    $vmDatastoreClusters = @($vm.DatastoreClusters)
+    if ($vmDatastoreClusters.Count -eq 1) {
+        $managementClass = Get-NarvikManagementClass -DatastoreClusterName ([string]$vmDatastoreClusters[0])
+    }
+    if ([string]::IsNullOrWhiteSpace($managementClass)) {
+        Write-NarvikLog -Level ERROR -Message "VM '$($vm.Name)' has no management class mapped from its datastore cluster; backup will not be started."
+        return $null
+    }
+
     $arguments = New-Object 'System.Collections.Generic.List[string]'
     [void]$arguments.Add('backup')
     [void]$arguments.Add('vm')
     [void]$arguments.Add((Quote-NarvikWindowsArgument -Argument $sanitizedName))
+    [void]$arguments.Add('-vmmc=' + (Quote-NarvikWindowsArgument -Argument $managementClass))
 
     if ($duplicateGuid) {
         [void]$arguments.Add('-VMBACKUPUPDATEGUID')
@@ -2656,7 +2982,7 @@ function Complete-NarvikJobs {
             $exitCode = $null
         }
 
-        $success = ($null -ne $exitCode -and $exitCode -eq 0 -and $content -match 'NO_ERROR')
+        $success = ($null -ne $exitCode -and $exitCode -eq 0 -and $content -match 'Total number of objects backed up: +1')
         $logWriteTime = $now
         try {
             if (Test-Path -LiteralPath $job.LogPath -PathType Leaf) {
