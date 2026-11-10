@@ -474,6 +474,7 @@ function Import-NarvikConfig {
     $knownKeys = @(
         'log_level',
         'check_administrator_privilege',
+        'bypass_security',
         'dsmc_path',
         'dsmc_use_preview',
         'vcenter_server',
@@ -514,6 +515,8 @@ function Import-NarvikConfig {
     }
 
     $checkAdministratorPrivilege = ConvertTo-NarvikBoolean -Value (Get-NarvikConfigValue -Config $config -Key 'check_administrator_privilege' -Default $false) -KeyName 'check_administrator_privilege'
+
+    $bypassSecurity = ConvertTo-NarvikBoolean -Value (Get-NarvikConfigValue -Config $config -Key 'bypass_security' -Default $false) -KeyName 'bypass_security'
 
     $dsmcUsePreview = ConvertTo-NarvikBoolean -Value (Get-NarvikConfigValue -Config $config -Key 'dsmc_use_preview' -Default $true) -KeyName 'dsmc_use_preview'
 
@@ -629,6 +632,7 @@ function Import-NarvikConfig {
     return [pscustomobject]@{
         log_level                             = $logLevel
         check_administrator_privilege         = $checkAdministratorPrivilege
+        bypass_security                       = $bypassSecurity
         dsmc_path                             = $dsmcPath
         dsmc_use_preview                      = $dsmcUsePreview
         vcenter_server                        = $vcenterServer
@@ -1251,12 +1255,14 @@ function Update-NarvikRuntimeConfig {
     try {
         $newConfig = Import-NarvikConfig -Path $configPath
 
-        Assert-NarvikPathAcl -Path $configPath -Mode Write -Description 'Configuration file'
-        Assert-NarvikPathAcl -Path (Split-Path -Parent $configPath) -Mode Write -Description 'Configuration directory'
-        Assert-NarvikPathAcl -Path $newConfig.vcenter_password_file -Mode Read -Description 'vCenter password file'
+        if (-not $newConfig.bypass_security) {
+            Assert-NarvikPathAcl -Path $configPath -Mode Write -Description 'Configuration file'
+            Assert-NarvikPathAcl -Path (Split-Path -Parent $configPath) -Mode Write -Description 'Configuration directory'
+            Assert-NarvikPathAcl -Path $newConfig.vcenter_password_file -Mode Read -Description 'vCenter password file'
 
-        if (-not [string]::IsNullOrWhiteSpace($newConfig.smtp_password_file)) {
-            Assert-NarvikPathAcl -Path $newConfig.smtp_password_file -Mode Read -Description 'SMTP password file'
+            if (-not [string]::IsNullOrWhiteSpace($newConfig.smtp_password_file)) {
+                Assert-NarvikPathAcl -Path $newConfig.smtp_password_file -Mode Read -Description 'SMTP password file'
+            }
         }
 
         $oldFingerprint = $script:VCenterFingerprint
@@ -1341,6 +1347,10 @@ function Initialize-Narvik {
     }
     else {
         Write-NarvikLog -Level INFO -Message 'Administrator privilege check is disabled by configuration.'
+    }
+
+    if ($script:Config.bypass_security) {
+        Write-NarvikLog -Level WARNING -Message 'File ACL checks are disabled by configuration (bypass_security).'
     }
 
     $powerCliModule = Get-Module -ListAvailable -Name 'VMware.VimAutomation.Core' | Select-Object -First 1
