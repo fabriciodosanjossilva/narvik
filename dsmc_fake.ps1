@@ -1,3 +1,4 @@
+#!/usr/bin/env pwsh
 #
 # dsmc_fake.ps1 - fake IBM Storage Protect client (dsmc) used to test Narvik.
 #
@@ -43,8 +44,10 @@
 # Notes:
 #   - Compatible with Windows PowerShell 5.1 (no PowerShell 7 syntax).
 #   - Narvik starts dsmc with Start-Process, which cannot run a .ps1 file
-#     directly; on Windows, point dsmc_path at a wrapper (for example a
-#     .cmd file) that invokes this script through powershell.exe.
+#     directly on Windows; on Windows, point dsmc_path at a wrapper (for
+#     example a .cmd file) that invokes this script through powershell.exe.
+#   - On Linux the shebang and the executable bit let Start-Process run this
+#     file directly through pwsh; this is what the local test environment uses.
 
 $ErrorActionPreference = 'Stop'
 

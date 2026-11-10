@@ -1519,12 +1519,25 @@ function Get-NarvikVCenterData {
     try {
         $connection = Connect-NarvikVCenter
 
-        $vmViews = @(Get-View -ViewType VirtualMachine -Property Name, Config, Runtime, Parent, Datastore -ErrorAction Stop | Where-Object { $null -ne $_ })
+        $vmViews = @(Get-View -ViewType VirtualMachine -Property Name, Config, Runtime.Host, Parent, Datastore -ErrorAction Stop | Where-Object { $null -ne $_ })
         $dsViews = @(Get-View -ViewType Datastore -Property Name -ErrorAction Stop | Where-Object { $null -ne $_ })
         $podViews = @(Get-View -ViewType StoragePod -Property Name, ChildEntity -ErrorAction Stop | Where-Object { $null -ne $_ })
         $folderViews = @(Get-View -ViewType Folder -Property Name, Parent -ErrorAction Stop | Where-Object { $null -ne $_ })
         $hostViews = @(Get-View -ViewType HostSystem -Property Name -ErrorAction Stop | Where-Object { $null -ne $_ })
-        $tagAssignments = @(Get-TagAssignment -ErrorAction Stop | Where-Object { $null -ne $_ })
+
+        # Tag assignments are only needed by the snapshot tag rule. If the
+        # tagging API is unavailable (for example on the simulator), keep
+        # collecting inventory unless that rule actually requires tags.
+        $tagAssignments = @()
+        try {
+            $tagAssignments = @(Get-TagAssignment -ErrorAction Stop | Where-Object { $null -ne $_ })
+        }
+        catch {
+            if (-not [string]::IsNullOrWhiteSpace([string]$script:Config.dont_backup_by_snapshot_tag_name)) {
+                throw
+            }
+            Write-NarvikLog -Level WARNING -Message "vCenter tag assignments are unavailable; continuing without tags: $($_.Exception.Message)"
+        }
 
         $folderMap = @{}
         foreach ($folder in $folderViews) {
@@ -2955,8 +2968,21 @@ function Start-NarvikBackupJob {
         $modeText = 'Full'
     }
 
+    $startParameters = @{
+        FilePath               = $script:Config.dsmc_path
+        ArgumentList           = $argumentString
+        RedirectStandardOutput = $logPath
+        RedirectStandardError  = $errorPath
+        PassThru               = $true
+        ErrorAction            = 'Stop'
+    }
+    # -WindowStyle is only supported by Start-Process on Windows.
+    if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+        $startParameters['WindowStyle'] = 'Hidden'
+    }
+
     try {
-        $process = Start-Process -FilePath $script:Config.dsmc_path -ArgumentList $argumentString -RedirectStandardOutput $logPath -RedirectStandardError $errorPath -WindowStyle Hidden -PassThru -ErrorAction Stop
+        $process = Start-Process @startParameters
     }
     catch {
         Write-NarvikLog -Level ERROR -Message "Failed to start $modeText backup for VM '$($vm.Name)': $($_.Exception.Message)"
@@ -3260,7 +3286,7 @@ function Invoke-NarvikMain {
 
     while ($true) {
         Invoke-NarvikControlFiles
-        if ($script:AbortRequested -or $script:StopRequested) {
+        if ($script:AbortRequested) {
             break
         }
 
