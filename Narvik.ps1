@@ -15,7 +15,7 @@
     standard output and exits with code 1.
 
 .NOTES
-    Target: Windows PowerShell 5.1 on Windows Server 2019.
+    Target: Windows PowerShell 5.1 or later on Windows Server 2019.
 #>
 [CmdletBinding()]
 param(
@@ -1290,12 +1290,8 @@ function Initialize-Narvik {
         Throw-NarvikFatal -Message 'The root directory parameter is required. Usage: Narvik.ps1 -RootPath <directory>.' -Code 1
     }
 
-    if ($env:OS -ne 'Windows_NT') {
-        Throw-NarvikFatal -Message 'Narvik requires Windows Server with Windows PowerShell 5.1.' -Code 1
-    }
-
-    if ($PSVersionTable.PSVersion.Major -ne 5) {
-        Throw-NarvikFatal -Message "Narvik requires Windows PowerShell 5.1; detected version $($PSVersionTable.PSVersion)." -Code 1
+    if ($PSVersionTable.PSVersion -lt [Version]'5.1') {
+        Throw-NarvikFatal -Message "Narvik requires PowerShell 5.1 or later; detected version $($PSVersionTable.PSVersion)." -Code 1
     }
 
     try {
