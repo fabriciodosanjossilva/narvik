@@ -11,13 +11,16 @@
     and control files below the selected root directory.
 
 .PARAMETER RootPath
-    Optional root directory. When omitted, the current working directory is used.
+    Mandatory root directory. When it is omitted, Narvik writes an error to
+    standard output and exits with code 1.
 
 .NOTES
     Target: Windows PowerShell 5.1 on Windows Server 2019.
 #>
 [CmdletBinding()]
 param(
+    # Not marked Mandatory on purpose: a missing value must be reported on stdout
+    # through the normal fatal-error path instead of PowerShell's interactive prompt.
     [Parameter(Position = 0)]
     [string]$RootPath
 )
@@ -1278,6 +1281,11 @@ function Update-NarvikRuntimeConfig {
 }
 
 function Initialize-Narvik {
+    $rootValue = $script:RootPathArgument
+    if ([string]::IsNullOrWhiteSpace($rootValue)) {
+        Throw-NarvikFatal -Message 'The root directory parameter is required. Usage: Narvik.ps1 -RootPath <directory>.' -Code 1
+    }
+
     if ($env:OS -ne 'Windows_NT') {
         Throw-NarvikFatal -Message 'Narvik requires Windows Server with Windows PowerShell 5.1.' -Code 1
     }
@@ -1288,11 +1296,6 @@ function Initialize-Narvik {
 
     if (-not (Test-NarvikIsAdministrator)) {
         Throw-NarvikFatal -Message 'Narvik must run as NT AUTHORITY\SYSTEM or as a member of the Administrators group.' -Code 1
-    }
-
-    $rootValue = $script:RootPathArgument
-    if ([string]::IsNullOrWhiteSpace($rootValue)) {
-        $rootValue = (Get-Location).Path
     }
 
     try {
