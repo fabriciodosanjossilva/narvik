@@ -114,6 +114,9 @@ if ($isError) {
 # ---------------------------------------------------------------------------
 
 $template = @'
+Copyright (c) 2010 Codethink Limited. Copyright (c) 2015 Canonical Limited. Copyright (C) 1998, 2019 Free Software Foundation, Inc.
+_TS_ Full on-demand BACKUP VM of virtual machines '_VMNAME_'.
+
 _TS_ Backup VM command started.  Total number of virtual machines to process: 1
 Accessing as node: VE_PRINCIPAL
 _PAUSE_5_

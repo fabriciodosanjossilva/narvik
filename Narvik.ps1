@@ -387,6 +387,14 @@ function Read-NarvikPasswordFile {
     return $value.TrimEnd([char]13, [char]10)
 }
 
+function Test-NarvikMailEnabled {
+    if ($null -eq $script:Config) {
+        return $false
+    }
+
+    return -not [string]::IsNullOrWhiteSpace([string]$script:Config.smtp_server)
+}
+
 function Send-NarvikMail {
     param(
         [Parameter(Mandatory = $true)]
@@ -398,7 +406,8 @@ function Send-NarvikMail {
         [string[]]$Attachments = @()
     )
 
-    if ($null -eq $script:Config) {
+    if (-not (Test-NarvikMailEnabled)) {
+        Write-NarvikLog -Level DEBUG -Message "SMTP server is not configured; email '$Subject' skipped."
         return $false
     }
 
@@ -550,62 +559,58 @@ function Import-NarvikConfig {
         }
     }
 
-    $smtpServer = [string](Get-NarvikConfigValue -Config $config -Key 'smtp_server' -Required)
-    if ([string]::IsNullOrWhiteSpace($smtpServer)) {
-        throw [System.Exception]::new("Configuration key 'smtp_server' must not be empty.")
-    }
-
+    $smtpServer = [string](Get-NarvikConfigValue -Config $config -Key 'smtp_server' -Default '')
     $smtpPort = 25
-    $smtpPortValue = Get-NarvikConfigValue -Config $config -Key 'smtp_port' -Default 25
-    try {
-        $smtpPort = [int]$smtpPortValue
-    }
-    catch {
-        throw [System.Exception]::new("Configuration key 'smtp_port' must be an integer.")
-    }
-    if ($smtpPort -lt 1 -or $smtpPort -gt 65535) {
-        throw [System.Exception]::new("Configuration key 'smtp_port' must be between 1 and 65535.")
-    }
-
-    $smtpUseSsl = ConvertTo-NarvikBoolean -Value (Get-NarvikConfigValue -Config $config -Key 'smtp_use_ssl' -Default $false) -KeyName 'smtp_use_ssl'
-    $smtpUsername = [string](Get-NarvikConfigValue -Config $config -Key 'smtp_username' -Default '')
-    $smtpPasswordFileValue = [string](Get-NarvikConfigValue -Config $config -Key 'smtp_password_file' -Default '')
+    $smtpUseSsl = $false
+    $smtpUsername = ''
     $smtpPasswordFile = $null
-    if (-not [string]::IsNullOrWhiteSpace($smtpPasswordFileValue)) {
-        $smtpPasswordFile = Resolve-NarvikPath -Path $smtpPasswordFileValue -BasePath $script:RootPath
-        if (-not (Test-Path -LiteralPath $smtpPasswordFile -PathType Leaf)) {
-            throw [System.Exception]::new("SMTP password file not found: '$smtpPasswordFile'.")
-        }
-    }
-    if (-not [string]::IsNullOrWhiteSpace($smtpUsername) -and [string]::IsNullOrWhiteSpace($smtpPasswordFileValue)) {
-        throw [System.Exception]::new("Configuration key 'smtp_password_file' is required when 'smtp_username' is set.")
-    }
-
-    $mailFrom = [string](Get-NarvikConfigValue -Config $config -Key 'mail_from' -Required)
-    if ([string]::IsNullOrWhiteSpace($mailFrom)) {
-        throw [System.Exception]::new("Configuration key 'mail_from' must not be empty.")
-    }
-
-    $mailToValue = Get-NarvikConfigValue -Config $config -Key 'mail_to' -Required
+    $mailFrom = ''
     $mailTo = @()
-    if ($mailToValue -is [string]) {
-        $mailTo = @($mailToValue)
-    }
-    else {
-        $mailTo = @($mailToValue)
-    }
-    $mailTo = @($mailTo | ForEach-Object { ([string]$_).Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-    if ($mailTo.Count -eq 0) {
-        throw [System.Exception]::new("Configuration key 'mail_to' must contain at least one email address.")
-    }
 
-    $emailPattern = '^[^@\s]+@[^@\s]+\.[^@\s]+$'
-    if ($mailFrom -notmatch $emailPattern) {
-        throw [System.Exception]::new("Configuration key 'mail_from' is not a valid email address: '$mailFrom'.")
-    }
-    foreach ($address in $mailTo) {
-        if ($address -notmatch $emailPattern) {
-            throw [System.Exception]::new("Configuration key 'mail_to' contains an invalid email address: '$address'.")
+    if (-not [string]::IsNullOrWhiteSpace($smtpServer)) {
+        $smtpPortValue = Get-NarvikConfigValue -Config $config -Key 'smtp_port' -Default 25
+        try {
+            $smtpPort = [int]$smtpPortValue
+        }
+        catch {
+            throw [System.Exception]::new("Configuration key 'smtp_port' must be an integer.")
+        }
+        if ($smtpPort -lt 1 -or $smtpPort -gt 65535) {
+            throw [System.Exception]::new("Configuration key 'smtp_port' must be between 1 and 65535.")
+        }
+
+        $smtpUseSsl = ConvertTo-NarvikBoolean -Value (Get-NarvikConfigValue -Config $config -Key 'smtp_use_ssl' -Default $false) -KeyName 'smtp_use_ssl'
+        $smtpUsername = [string](Get-NarvikConfigValue -Config $config -Key 'smtp_username' -Default '')
+        $smtpPasswordFileValue = [string](Get-NarvikConfigValue -Config $config -Key 'smtp_password_file' -Default '')
+        if (-not [string]::IsNullOrWhiteSpace($smtpPasswordFileValue)) {
+            $smtpPasswordFile = Resolve-NarvikPath -Path $smtpPasswordFileValue -BasePath $script:RootPath
+            if (-not (Test-Path -LiteralPath $smtpPasswordFile -PathType Leaf)) {
+                throw [System.Exception]::new("SMTP password file not found: '$smtpPasswordFile'.")
+            }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($smtpUsername) -and [string]::IsNullOrWhiteSpace($smtpPasswordFileValue)) {
+            throw [System.Exception]::new("Configuration key 'smtp_password_file' is required when 'smtp_username' is set.")
+        }
+
+        $mailFrom = [string](Get-NarvikConfigValue -Config $config -Key 'mail_from' -Required)
+        if ([string]::IsNullOrWhiteSpace($mailFrom)) {
+            throw [System.Exception]::new("Configuration key 'mail_from' must not be empty.")
+        }
+
+        $mailToValue = Get-NarvikConfigValue -Config $config -Key 'mail_to' -Required
+        $mailTo = @($mailToValue | ForEach-Object { ([string]$_).Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        if ($mailTo.Count -eq 0) {
+            throw [System.Exception]::new("Configuration key 'mail_to' must contain at least one email address.")
+        }
+
+        $emailPattern = '^[^@\s]+@[^@\s]+\.[^@\s]+$'
+        if ($mailFrom -notmatch $emailPattern) {
+            throw [System.Exception]::new("Configuration key 'mail_from' is not a valid email address: '$mailFrom'.")
+        }
+        foreach ($address in $mailTo) {
+            if ($address -notmatch $emailPattern) {
+                throw [System.Exception]::new("Configuration key 'mail_to' contains an invalid email address: '$address'.")
+            }
         }
     }
 
@@ -2089,6 +2094,10 @@ function Send-NarvikDuplicateNameAlerts {
         return
     }
 
+    if (-not (Test-NarvikMailEnabled)) {
+        return
+    }
+
     $now = Get-Date
     $dueCases = [System.Collections.Generic.List[object]]::new()
 
@@ -2150,6 +2159,10 @@ function Send-NarvikInventoryRuleAlerts {
     $clusterCases = @($script:DatastoreClusterCases)
     $managementClassCases = @($script:ManagementClassCases)
     if ($nameCases.Count -eq 0 -and $clusterCases.Count -eq 0 -and $managementClassCases.Count -eq 0) {
+        return
+    }
+
+    if (-not (Test-NarvikMailEnabled)) {
         return
     }
 
@@ -2335,7 +2348,7 @@ function Update-NarvikIndependentDiskControl {
     }
     $script:IndependentDisks = @($kept)
 
-    if ($SendAlerts) {
+    if ($SendAlerts -and (Test-NarvikMailEnabled)) {
         $now = Get-Date
         $eligibleKeys = @{}
         foreach ($vm in @($script:EligibleVMs)) {
@@ -3220,7 +3233,7 @@ function Invoke-NarvikMain {
 
     while ($true) {
         Invoke-NarvikControlFiles
-        if ($script:AbortRequested) {
+        if ($script:AbortRequested -or $script:StopRequested) {
             break
         }
 
