@@ -5,6 +5,7 @@
   "dsmc_path": "C:\\Program Files\\Tivoli\\TSM\\baclient\\dsmc.exe",
   "dsmc_use_preview": true,
   "vcenter_server": "vcenter.example.local",
+  "vcenter_port": 443,
   "vcenter_user": "narvik@example.local",
   "vcenter_password_file": "vcenter_password.txt",
   "vcenter_ignore_certificate": false,

@@ -478,6 +478,7 @@ function Import-NarvikConfig {
         'dsmc_path',
         'dsmc_use_preview',
         'vcenter_server',
+        'vcenter_port',
         'vcenter_user',
         'vcenter_password_file',
         'vcenter_ignore_certificate',
@@ -523,6 +524,21 @@ function Import-NarvikConfig {
     $vcenterServer = [string](Get-NarvikConfigValue -Config $config -Key 'vcenter_server' -Required)
     if ([string]::IsNullOrWhiteSpace($vcenterServer)) {
         throw [System.Exception]::new("Configuration key 'vcenter_server' must not be empty.")
+    }
+    if ([Uri]::CheckHostName($vcenterServer) -eq [UriHostNameType]::Unknown) {
+        throw [System.Exception]::new("Configuration key 'vcenter_server' must be a hostname or IP address without scheme, port or path; configure the port with 'vcenter_port'.")
+    }
+
+    $vcenterPortValue = Get-NarvikConfigValue -Config $config -Key 'vcenter_port' -Default 443
+    $vcenterPort = 443
+    try {
+        $vcenterPort = [int]$vcenterPortValue
+    }
+    catch {
+        throw [System.Exception]::new("Configuration key 'vcenter_port' must be an integer.")
+    }
+    if ($vcenterPort -lt 1 -or $vcenterPort -gt 65535) {
+        throw [System.Exception]::new("Configuration key 'vcenter_port' must be between 1 and 65535.")
     }
 
     $vcenterUser = [string](Get-NarvikConfigValue -Config $config -Key 'vcenter_user' -Required)
@@ -636,6 +652,7 @@ function Import-NarvikConfig {
         dsmc_path                             = $dsmcPath
         dsmc_use_preview                      = $dsmcUsePreview
         vcenter_server                        = $vcenterServer
+        vcenter_port                          = $vcenterPort
         vcenter_user                          = $vcenterUser
         vcenter_password_file                 = $vcenterPasswordFile
         vcenter_ignore_certificate            = $vcenterIgnoreCertificate
@@ -663,7 +680,7 @@ function Get-NarvikVCenterFingerprint {
         $passwordWriteTime = (Get-Item -LiteralPath $Config.vcenter_password_file).LastWriteTimeUtc.ToString('o')
     }
 
-    return "$($Config.vcenter_server)|$($Config.vcenter_user)|$($Config.vcenter_password_file)|$passwordWriteTime"
+    return "$($Config.vcenter_server)|$($Config.vcenter_port)|$($Config.vcenter_user)|$($Config.vcenter_password_file)|$passwordWriteTime"
 }
 
 function ConvertFrom-NarvikIsoDate {
@@ -1369,7 +1386,7 @@ function Initialize-Narvik {
     Write-NarvikLog -Level INFO -Message "Root directory: '$($script:RootPath)'."
     Write-NarvikLog -Level INFO -Message "Process ID: $PID."
     Write-NarvikLog -Level INFO -Message "Log level: $($script:Config.log_level)."
-    Write-NarvikLog -Level INFO -Message "vCenter: '$($script:Config.vcenter_server)' as '$($script:Config.vcenter_user)'."
+    Write-NarvikLog -Level INFO -Message "vCenter: '$($script:Config.vcenter_server):$($script:Config.vcenter_port)' as '$($script:Config.vcenter_user)'."
     Write-NarvikLog -Level INFO -Message "dsmc: '$($script:Config.dsmc_path)'; preview mode: $($script:Config.dsmc_use_preview)."
     Write-NarvikLog -Level INFO -Message "Maximum concurrent backups: $($script:Config.max_backup_threads)."
 
@@ -1408,7 +1425,7 @@ function Connect-NarvikVCenter {
     $secure = ConvertTo-SecureString -String $password -AsPlainText -Force
     $credential = New-Object System.Management.Automation.PSCredential -ArgumentList $script:Config.vcenter_user, $secure
 
-    $connection = Connect-VIServer -Server $script:Config.vcenter_server -Credential $credential -ErrorAction Stop -WarningAction SilentlyContinue
+    $connection = Connect-VIServer -Server $script:Config.vcenter_server -Port $script:Config.vcenter_port -Credential $credential -ErrorAction Stop -WarningAction SilentlyContinue
     return $connection
 }
 
