@@ -29,8 +29,10 @@ Narvik is a backup automation for "IBM Storage Protect for VMWare" on Windows Se
   successful when `dsmc` exits 0 and reports backed-up objects in its output.
 - Knows the special cases that snapshot backups cannot serve, and excludes
   (with an alert) VMs that have RDM disks, names unsupported by the backup
-  command, duplicate names, or no single datastore cluster with a management
-  class mapping. The single cluster is decided from the VM's disks: a disk on
+  command, duplicate names, disks whose size is not a multiple of 1 MiB, or
+  no single datastore cluster with a management class mapping. The disk size
+  alert names each affected disk and its size in MiB. The single cluster is
+  decided from the VM's disks: a disk on
   a datastore outside every datastore cluster, or disks spanning more than
   one cluster, also makes the VM ineligible, while ISO images attached to
   CD/DVD drives are ignored; a VM without disks is not eligible.
@@ -41,10 +43,10 @@ Narvik is a backup automation for "IBM Storage Protect for VMWare" on Windows Se
   `NAO_FAZER_BACKUP_POR_SNAPSHOT`) on a VM, datastore or datastore cluster
   removes it from backups.
 - VMware Live Site Recovery placeholder VMs are skipped silently.
-- Email alerts: duplicate names, inventory rule violations, independent
-  disks and fatal errors are mailed through SMTP (optional SSL and
-  authentication, credentials read from files); a fatal exit attaches the
-  full log.
+- Email alerts: duplicate names, inventory rule violations, disk sizes not
+  aligned to 1 MiB, independent disks and fatal errors are mailed through
+  SMTP (optional SSL and authentication, credentials read from files); a fatal
+  exit attaches the full log.
 - Monitoring hooks: writes `eligible_count.txt`, `eligible_vms.txt` and
   `pending_count.txt` so external tooling can watch the queue.
 - Logs: one log per VM backup plus a daily-rotated main log.

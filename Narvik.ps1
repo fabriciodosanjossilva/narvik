@@ -56,6 +56,7 @@ $script:DuplicateNameCases = @()
 $script:UnsupportedNameCases = @()
 $script:DatastoreClusterCases = @()
 $script:ManagementClassCases = @()
+$script:DiskSizeCases = @()
 $script:LastFull = @{}
 $script:IndependentDisks = @()
 $script:DuplicateGuid = @{}
@@ -65,6 +66,7 @@ $script:State = @{
     last_idle = $null
     duplicate_name_alerts = @{}
     inventory_rule_alerts = @{}
+    disk_size_alerts = @{}
 }
 $script:ProcessLockStream = $null
 $script:ProcessLockFile = $null
@@ -727,6 +729,7 @@ function Load-NarvikState {
         last_idle             = $null
         duplicate_name_alerts = @{}
         inventory_rule_alerts = @{}
+        disk_size_alerts      = @{}
     }
 
     $path = Join-Path $script:ControlDir 'state.json'
@@ -777,6 +780,15 @@ function Load-NarvikState {
                 }
             }
         }
+
+        if ($null -ne $object.disk_size_alerts) {
+            foreach ($property in $object.disk_size_alerts.PSObject.Properties) {
+                $parsed = ConvertFrom-NarvikIsoDate -Value ([string]$property.Value)
+                if ($null -ne $parsed) {
+                    $script:State.disk_size_alerts[$property.Name] = $parsed
+                }
+            }
+        }
     }
     catch {
         Write-NarvikLog -Level WARNING -Message "State file '$path' is invalid: $($_.Exception.Message)"
@@ -819,6 +831,11 @@ function Save-NarvikState {
         $inventoryAlerts[$name] = $script:State.inventory_rule_alerts[$name].ToString('o')
     }
 
+    $diskSizeAlerts = @{}
+    foreach ($name in $script:State.disk_size_alerts.Keys) {
+        $diskSizeAlerts[$name] = $script:State.disk_size_alerts[$name].ToString('o')
+    }
+
     $lastIdle = $null
     if ($null -ne $script:State.last_idle) {
         $lastIdle = $script:State.last_idle.ToString('o')
@@ -830,6 +847,7 @@ function Save-NarvikState {
         last_idle             = $lastIdle
         duplicate_name_alerts = $duplicateAlerts
         inventory_rule_alerts = $inventoryAlerts
+        disk_size_alerts      = $diskSizeAlerts
     }
 
     $json = $object | ConvertTo-Json -Depth 10
@@ -1708,11 +1726,14 @@ function Get-NarvikVCenterData {
                     $diskMode = [string]$device.DiskMode
                     $isIndependent = ($diskMode -match 'independent')
 
+                    $capacityKb = 0L
                     $sizeGb = 0.0
                     try {
-                        $sizeGb = [math]::Round(([double]$device.CapacityInKB / 1048576.0), 2)
+                        $capacityKb = [long]$device.CapacityInKB
+                        $sizeGb = [math]::Round(([double]$capacityKb / 1048576.0), 2)
                     }
                     catch {
+                        $capacityKb = 0L
                         $sizeGb = 0.0
                     }
                     $totalSizeGb += $sizeGb
@@ -1764,6 +1785,7 @@ function Get-NarvikVCenterData {
                         Independent      = [bool]$isIndependent
                         RDM              = [bool]$isRdm
                         SizeGB           = [double]$sizeGb
+                        CapacityInKB     = [long]$capacityKb
                         Datastore        = $datastoreName
                         DatastoreCluster = $clusterName
                         DiskMode         = $diskMode
@@ -1903,6 +1925,15 @@ function Test-NarvikTagPresent {
     return $false
 }
 
+function Format-NarvikDiskSizeMiB {
+    param(
+        [Parameter(Mandatory = $true)]
+        [long]$CapacityInKB
+    )
+
+    return ([double]$CapacityInKB / 1024.0).ToString('0.##########', [System.Globalization.CultureInfo]::InvariantCulture)
+}
+
 function Add-NarvikReason {
     param(
         [System.Collections.Generic.List[string]]$Reasons,
@@ -1954,6 +1985,7 @@ function Update-NarvikEligibility {
         $script:UnsupportedNameCases = @()
         $script:DatastoreClusterCases = @()
         $script:ManagementClassCases = @()
+        $script:DiskSizeCases = @()
         Write-NarvikMonitoringFiles
         return
     }
@@ -1973,6 +2005,7 @@ function Update-NarvikEligibility {
     $unsupportedNameCases = [System.Collections.Generic.List[object]]::new()
     $datastoreClusterCases = [System.Collections.Generic.List[object]]::new()
     $managementClassCases = [System.Collections.Generic.List[object]]::new()
+    $diskSizeCases = [System.Collections.Generic.List[object]]::new()
 
     foreach ($vm in @($script:VCache.VMs)) {
         $reasons = New-Object 'System.Collections.Generic.List[string]'
@@ -2019,10 +2052,34 @@ function Update-NarvikEligibility {
             Add-Member -InputObject $vm -NotePropertyName 'ManagementClass' -NotePropertyValue $managementClass
         }
 
+        $invalidSizeDisks = [System.Collections.Generic.List[object]]::new()
         foreach ($disk in @($vm.Disks)) {
             if ($disk.RDM) {
                 Add-NarvikReason -Reasons $reasons -Reason "RDM disk '$($disk.Label)'"
             }
+
+            $capacityKb = 0L
+            if ($disk.PSObject.Properties.Name -contains 'CapacityInKB') {
+                try {
+                    $capacityKb = [long]$disk.CapacityInKB
+                }
+                catch {
+                    $capacityKb = 0L
+                }
+            }
+
+            if (($capacityKb % 1024) -ne 0) {
+                $sizeMiBText = Format-NarvikDiskSizeMiB -CapacityInKB $capacityKb
+                Add-NarvikReason -Reasons $reasons -Reason "Disk '$($disk.Label)' size $sizeMiBText MiB is not a multiple of 1 MiB"
+                [void]$invalidSizeDisks.Add($disk)
+            }
+        }
+
+        if ($invalidSizeDisks.Count -gt 0) {
+            [void]$diskSizeCases.Add([pscustomobject]@{
+                VM    = $vm
+                Disks = @($invalidSizeDisks)
+            })
         }
 
         if (-not [string]::IsNullOrWhiteSpace($snapshotTagName) -and (Test-NarvikTagPresent -Tags $vm.Tags -TagName $snapshotTagName)) {
@@ -2114,6 +2171,7 @@ function Update-NarvikEligibility {
     $script:UnsupportedNameCases = @($unsupportedNameCases)
     $script:DatastoreClusterCases = @($datastoreClusterCases)
     $script:ManagementClassCases = @($managementClassCases)
+    $script:DiskSizeCases = @($diskSizeCases)
 
     $signatureParts = New-Object 'System.Collections.Generic.List[string]'
     foreach ($entry in $script:NonEligibleVMs) {
@@ -2134,6 +2192,7 @@ function Update-NarvikEligibility {
     if ($SendAlerts) {
         Send-NarvikDuplicateNameAlerts
         Send-NarvikInventoryRuleAlerts
+        Send-NarvikDiskSizeAlerts
         Update-NarvikIndependentDiskControl -SendAlerts
     }
 }
@@ -2364,6 +2423,79 @@ function Send-NarvikInventoryRuleAlerts {
     }
     else {
         Write-NarvikLog -Level ERROR -Message 'Unsupported name/datastore cluster/management class alert could not be sent; it will be retried on the next inventory collection.'
+    }
+}
+
+function Send-NarvikDiskSizeAlerts {
+    $cases = @($script:DiskSizeCases)
+    if ($cases.Count -eq 0) {
+        return
+    }
+
+    if (-not (Test-NarvikMailEnabled)) {
+        return
+    }
+
+    $now = Get-Date
+    $dueCases = [System.Collections.Generic.List[object]]::new()
+
+    foreach ($case in $cases) {
+        $key = ([string]$case.VM.Name).ToLowerInvariant()
+        $lastAlert = $null
+        if ($script:State.disk_size_alerts.ContainsKey($key)) {
+            $lastAlert = $script:State.disk_size_alerts[$key]
+        }
+
+        if ($null -ne $lastAlert) {
+            $ageHours = ($now - $lastAlert).TotalHours
+            if ($ageHours -lt 24) {
+                Write-NarvikLog -Level INFO -Message "VM '$($case.VM.Name)' with a disk size that is not a multiple of 1 MiB was already reported at $($lastAlert.ToString('yyyy-MM-dd HH:mm:ss')); alert suppressed for 24 hours."
+                continue
+            }
+        }
+
+        [void]$dueCases.Add($case)
+    }
+
+    if ($dueCases.Count -eq 0) {
+        return
+    }
+
+    $body = New-Object System.Text.StringBuilder
+    [void]$body.AppendLine('Narvik detected VMs with disks whose size is not a multiple of 1 MiB.')
+    [void]$body.AppendLine('The backup command requires disk sizes that are a multiple of 1 MiB.')
+    [void]$body.AppendLine('')
+    [void]$body.AppendLine('The following VMs were excluded from backup:')
+    [void]$body.AppendLine('')
+
+    foreach ($case in $dueCases) {
+        $vm = $case.VM
+        [void]$body.AppendLine("Name: '$($vm.Name)'")
+        [void]$body.AppendLine("  - Folder: '$($vm.FolderPath)' | Host: '$($vm.HostName)' | MoRef: '$($vm.MoRef)'")
+        foreach ($disk in @($case.Disks)) {
+            $capacityKb = 0L
+            if ($disk.PSObject.Properties.Name -contains 'CapacityInKB') {
+                $capacityKb = [long]$disk.CapacityInKB
+            }
+            $sizeMiBText = Format-NarvikDiskSizeMiB -CapacityInKB $capacityKb
+            [void]$body.AppendLine("  - Disk: '$($disk.Label)' | Size: $sizeMiBText MiB")
+        }
+        [void]$body.AppendLine('')
+    }
+
+    $subject = '[Narvik] VM disks whose size is not a multiple of 1 MiB - action required'
+    $sent = Send-NarvikMail -Subject $subject -Body $body.ToString()
+
+    if ($sent) {
+        foreach ($case in $dueCases) {
+            $key = ([string]$case.VM.Name).ToLowerInvariant()
+            $script:State.disk_size_alerts[$key] = $now
+        }
+        Save-NarvikState
+        Write-NarvikLog -Level INFO -Message "Disk size alert sent for $($dueCases.Count) VM(s)."
+    }
+    else {
+        Write-NarvikLog -Level ERROR -Message 'Disk size alert could not be sent; it will be retried on the next inventory collection.'
     }
 }
 
