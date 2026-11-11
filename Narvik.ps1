@@ -1519,7 +1519,7 @@ function Get-NarvikVCenterData {
     try {
         $connection = Connect-NarvikVCenter
 
-        $vmViews = @(Get-View -ViewType VirtualMachine -Property Name, Config, Runtime.Host, Parent, Datastore -ErrorAction Stop | Where-Object { $null -ne $_ })
+        $vmViews = @(Get-View -ViewType VirtualMachine -Property Name, Config, Runtime.Host, Parent -ErrorAction Stop | Where-Object { $null -ne $_ })
         $dsViews = @(Get-View -ViewType Datastore -Property Name -ErrorAction Stop | Where-Object { $null -ne $_ })
         $podViews = @(Get-View -ViewType StoragePod -Property Name, ChildEntity -ErrorAction Stop | Where-Object { $null -ne $_ })
         $folderViews = @(Get-View -ViewType Folder -Property Name, Parent -ErrorAction Stop | Where-Object { $null -ne $_ })
@@ -1772,19 +1772,15 @@ function Get-NarvikVCenterData {
                 }
             }
 
+            # The datastore cluster association comes from the VM's disks only.
+            # Datastores used by other devices (for example ISO images attached
+            # to CD/DVD drives) and the datastore holding the VM home files are
+            # not part of the placement rule. A VM without disks gets no
+            # association, which makes it ineligible.
             $vmClusterNames = New-Object 'System.Collections.Generic.List[string]'
             $vmClusterKeys = @{}
-            foreach ($datastoreRef in @($vmView.Datastore)) {
-                if ($null -eq $datastoreRef) {
-                    continue
-                }
-
-                $datastoreId = [string]$datastoreRef.Value
-                if ([string]::IsNullOrWhiteSpace($datastoreId) -or -not $podByDatastore.ContainsKey($datastoreId)) {
-                    continue
-                }
-
-                $podName = [string]$podByDatastore[$datastoreId].Name
+            foreach ($disk in @($disks)) {
+                $podName = [string]$disk.DatastoreCluster
                 if ([string]::IsNullOrWhiteSpace($podName)) {
                     continue
                 }
@@ -1986,8 +1982,16 @@ function Update-NarvikEligibility {
             [void]$unsupportedNameCases.Add($vm)
         }
 
+        # A VM without disks has no backup data worth protecting and no
+        # datastore cluster association, so it can never be eligible.
+        if (@($vm.Disks).Count -eq 0) {
+            Add-NarvikReason -Reasons $reasons -Reason 'VM has no disks'
+        }
+
         $vmDatastoreClusters = @($vm.DatastoreClusters)
         $managementClass = ''
+        # Datastores used by the VM's disks that belong to no datastore cluster.
+        $standaloneDatastores = New-Object 'System.Collections.Generic.List[string]'
         if ($vmDatastoreClusters.Count -ne 1) {
             if ($vmDatastoreClusters.Count -eq 0) {
                 Add-NarvikReason -Reasons $reasons -Reason 'VM is not associated with any datastore cluster (exactly one is required)'
@@ -1995,10 +1999,6 @@ function Update-NarvikEligibility {
             else {
                 Add-NarvikReason -Reasons $reasons -Reason "VM is associated with $($vmDatastoreClusters.Count) datastore clusters ($($vmDatastoreClusters -join ', ')); exactly one is required"
             }
-            [void]$datastoreClusterCases.Add([pscustomobject]@{
-                VM                = $vm
-                DatastoreClusters = $vmDatastoreClusters
-            })
         }
         else {
             $datastoreClusterName = [string]$vmDatastoreClusters[0]
@@ -2043,6 +2043,15 @@ function Update-NarvikEligibility {
                 }
             }
 
+            # A disk on a datastore that belongs to no datastore cluster breaks
+            # the placement rule even when the other disks sit in one cluster.
+            if ([string]::IsNullOrWhiteSpace([string]$disk.DatastoreCluster)) {
+                Add-NarvikReason -Reasons $reasons -Reason "Disk '$($disk.Label)' is on datastore '$datastoreName' which is not in any datastore cluster"
+                if (-not $standaloneDatastores.Contains($datastoreName)) {
+                    [void]$standaloneDatastores.Add($datastoreName)
+                }
+            }
+
             $clusterName = [string]$disk.DatastoreCluster
             if (-not [string]::IsNullOrWhiteSpace($clusterName) -and $clusterByName.ContainsKey($clusterName)) {
                 $cluster = $clusterByName[$clusterName]
@@ -2050,6 +2059,14 @@ function Update-NarvikEligibility {
                     Add-NarvikReason -Reasons $reasons -Reason "Datastore cluster '$clusterName' tag '$snapshotTagName'"
                 }
             }
+        }
+
+        if ($vmDatastoreClusters.Count -ne 1 -or $standaloneDatastores.Count -gt 0) {
+            [void]$datastoreClusterCases.Add([pscustomobject]@{
+                VM                   = $vm
+                DatastoreClusters    = $vmDatastoreClusters
+                StandaloneDatastores = @($standaloneDatastores | Sort-Object)
+            })
         }
 
         if ($reasons.Count -gt 0) {
@@ -2299,6 +2316,13 @@ function Send-NarvikInventoryRuleAlerts {
             [void]$body.AppendLine("Name: '$($vm.Name)'")
             [void]$body.AppendLine("  - Folder: '$($vm.FolderPath)' | Host: '$($vm.HostName)' | MoRef: '$($vm.MoRef)'")
             [void]$body.AppendLine("  - Datastore clusters: $clusterText")
+            $standaloneNames = @()
+            if ($case.PSObject.Properties.Name -contains 'StandaloneDatastores') {
+                $standaloneNames = @($case.StandaloneDatastores)
+            }
+            if ($standaloneNames.Count -gt 0) {
+                [void]$body.AppendLine("  - Datastores outside a datastore cluster: '" + ($standaloneNames -join "', '") + "'")
+            }
             [void]$body.AppendLine('')
         }
     }
@@ -2504,7 +2528,10 @@ function Test-NarvikBackoffActive {
     }
 
     $exponent = $count - 1
-    $minutes = 15 * [math]::Pow(2, $exponent)
+
+    # The first retry comes after one minute and doubles on every further
+    # failure.
+    $minutes = [math]::Pow(2, $exponent)
 
     # Cap the backoff at 12 hours (720 minutes) so a VM that keeps failing
     # is still retried at least twice a day.

@@ -84,7 +84,7 @@ $UsageExitCode = 12
 
 # Chance, in percent, that a backup of a VM whose name contains neither
 # "_err" nor "_dup" fails silently (no output, no error code, just exits).
-$RandomFailurePercent = 20
+$RandomFailurePercent = 5
 
 # ---------------------------------------------------------------------------
 # Parse the command line.
