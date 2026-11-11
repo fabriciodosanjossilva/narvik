@@ -2505,8 +2505,11 @@ function Test-NarvikBackoffActive {
 
     $exponent = $count - 1
     $minutes = 15 * [math]::Pow(2, $exponent)
-    if ($minutes -gt 43200) {
-        $minutes = 43200
+
+    # Cap the backoff at 12 hours (720 minutes) so a VM that keeps failing
+    # is still retried at least twice a day.
+    if ($minutes -gt 720) {
+        $minutes = 720
     }
 
     $nextAttempt = $entry.last_attempt.AddMinutes($minutes)

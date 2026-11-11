@@ -9,14 +9,29 @@
 # Behavior:
 #   - The VM name is the argument that follows "backup vm" (surrounding
 #     double quotes are stripped).
-#   - If the VM name contains "_err", the backup fails: the template is
-#     printed only down to its _ERR_ marker, where an ANS1715E error line is
-#     printed and the script stops with exit code 8. ANS1715E is the error
-#     Narvik uses to flag a duplicate VM GUID, so the next attempt for that
-#     VM runs with -VMBACKUPUPDATEGUID and -mode IFFull. Change
-#     $ErrorAnsCode below if a plain failure is wanted instead.
-#   - Otherwise the backup succeeds: the whole template is printed, _RES_
-#     becomes 1 and the exit code is 0.
+#   - If the VM name contains "_err", the backup always fails, whatever the
+#     mode: the template is printed only down to its _ERR_ marker, where a
+#     plain error line ($PlainErrorAnsCode, a code different from
+#     $ErrorAnsCode) is printed and the script stops with exit code 8. The
+#     failure is certain and carries no duplicate GUID code, so Narvik
+#     records it as an ordinary failed attempt; "_err" takes precedence over
+#     "_dup" when a name contains both.
+#   - If the VM name contains "_dup" and the backup is not a Full one, the
+#     backup fails: the template is printed only down to its _ERR_ marker,
+#     where an ANS1715E error line is printed and the script stops with exit
+#     code 8. ANS1715E is the error Narvik uses to flag a duplicate VM GUID,
+#     so the next attempt for that VM runs with -VMBACKUPUPDATEGUID and
+#     -mode IFFull; that attempt is a Full backup, so it succeeds and the
+#     whole duplicate GUID flow can be tested end to end.
+#   - If the VM name contains "_dup" and the backup is a Full one, the backup
+#     always succeeds: the whole template is printed, _RES_ becomes 1 and the
+#     exit code is 0.
+#   - Any other VM name is treated normally: the whole template is printed,
+#     _RES_ becomes 1 and the exit code is 0, but every attempt (preview
+#     included) has a $RandomFailurePercent percent chance of failing
+#     silently: no output, no error code, the script simply exits with the
+#     backup-failure exit code. Narvik records a plain failed attempt and
+#     retries the VM later without the duplicate GUID flag.
 #   - "-mode IFFull", "-mode=IFFull" or "-VMBACKUPUPDATEGUID" select a Full
 #     backup (_MODE_ = Full); anything else is Incremental.
 #   - The output template (from out.txt) is embedded below and printed line
@@ -28,8 +43,8 @@
 #       _PAUSE_N_   -> line removed; an N-second pause runs instead (out.txt
 #                      currently pauses 5, 5, 3, 30 and 2 seconds, so a
 #                      successful backup takes about 45 seconds)
-#       _ERR_       -> line removed; on a failing backup the ANS1715E error
-#                      line is printed here and the script stops
+#       _ERR_       -> line removed; on a duplicate-name failing backup the
+#                      ANS1715E error line is printed here and the script stops
 #   - -vmmc and -preview are accepted and ignored.
 #
 # Exit codes (same convention as dsmc):
@@ -39,7 +54,9 @@
 #
 # Examples:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File dsmc_fake.ps1 backup vm SRV-APP01 -vmmc=GOLD -preview
-#   powershell -NoProfile -ExecutionPolicy Bypass -File dsmc_fake.ps1 backup vm SRV-DB01_err -vmmc=GOLD -VMBACKUPUPDATEGUID -mode IFFull
+#   powershell -NoProfile -ExecutionPolicy Bypass -File dsmc_fake.ps1 backup vm SRV-DB01_err -vmmc=GOLD
+#   powershell -NoProfile -ExecutionPolicy Bypass -File dsmc_fake.ps1 backup vm SRV-DB01_dup -vmmc=GOLD
+#   powershell -NoProfile -ExecutionPolicy Bypass -File dsmc_fake.ps1 backup vm SRV-DB01_dup -vmmc=GOLD -VMBACKUPUPDATEGUID -mode IFFull
 #
 # Notes:
 #   - Compatible with Windows PowerShell 5.1 (no PowerShell 7 syntax).
@@ -51,10 +68,23 @@
 
 $ErrorActionPreference = 'Stop'
 
-# Error reported when the VM name contains "_err".
+# Error reported when the VM name contains "_dup" and the backup is not a
+# Full one.
 $ErrorAnsCode = 'ANS1715E'
-$ErrorExitCode = 8
+
+# Error reported when the VM name contains "_err": a plain, certain failure
+# that must never look like the duplicate GUID case, so its code differs from
+# $ErrorAnsCode.
+$PlainErrorAnsCode = 'ANS1512E'
+
+# Exit code for a failed backup (dsmc convention); shared by the duplicate
+# GUID error, the "_err" forced failure and the random silent failure.
+$FailureExitCode = 8
 $UsageExitCode = 12
+
+# Chance, in percent, that a backup of a VM whose name contains neither
+# "_err" nor "_dup" fails silently (no output, no error code, just exits).
+$RandomFailurePercent = 20
 
 # ---------------------------------------------------------------------------
 # Parse the command line.
@@ -105,10 +135,26 @@ if ($isFull) {
     $mode = 'Full'
 }
 
-$isError = $vmName -like '*_err*'
+# An "_err" VM always fails, whatever the mode, and never with the duplicate
+# GUID code: it takes precedence over every other rule below.
+$isForcedError = $vmName -like '*_err*'
+
+# A "_dup" VM fails with the duplicate GUID error only when the backup is not
+# a Full one, so the retry Narvik schedules (-VMBACKUPUPDATEGUID with
+# -mode IFFull) always succeeds.
+$isDuplicate = (-not $isForcedError) -and ($vmName -like '*_dup*') -and (-not $isFull)
+
+# Every other VM name is backed up normally, but each attempt has a
+# $RandomFailurePercent percent chance of failing silently: no output, no
+# error code, the script just exits with the backup-failure exit code.
+$isRandomFailure = (-not $isForcedError) -and (-not ($vmName -like '*_dup*')) -and ((Get-Random -Minimum 0 -Maximum 100) -lt $RandomFailurePercent)
+
+if ($isRandomFailure) {
+    exit $FailureExitCode
+}
 
 $result = '1'
-if ($isError) {
+if ($isForcedError -or $isDuplicate) {
     $result = '0'
 }
 
@@ -198,11 +244,17 @@ foreach ($line in ($template -split "`r?`n")) {
     }
 
     # "_ERR_" marks where a failing backup reports its error and stops; on a
-    # successful backup the marker line is simply removed.
+    # successful backup the marker line is simply removed. The "_err" forced
+    # failure is checked first so it can never be mistaken for the duplicate
+    # GUID case.
     if ($line -match '_ERR_') {
-        if ($isError) {
+        if ($isForcedError) {
+            Write-Output ($PlainErrorAnsCode + ' The backup of virtual machine failed.')
+            exit $FailureExitCode
+        }
+        if ($isDuplicate) {
             Write-Output ($ErrorAnsCode + ' The backup of virtual machine failed because a duplicate virtual machine GUID was detected.')
-            exit $ErrorExitCode
+            exit $FailureExitCode
         }
         continue
     }
@@ -220,9 +272,10 @@ foreach ($line in ($template -split "`r?`n")) {
 }
 
 # Safety net: a failing backup must never exit with 0, even if the template
-# above has no _ERR_ marker.
-if ($isError) {
-    exit $ErrorExitCode
+# above has no _ERR_ marker. (The random silent failure has already exited
+# above.)
+if ($isForcedError -or $isDuplicate) {
+    exit $FailureExitCode
 }
 
 exit 0
