@@ -15,15 +15,8 @@
     "DatastoreCluster-02": "MGMT_CLASS_2"
   },
   "priority_clusters": [
-    {
-      "name": "Cluster-01",
-      "priority": 10,
-      "max_threads": 2
-    },
-    {
-      "name": "Cluster-02",
-      "priority": -10
-    }
+    { "name": "Cluster-01", "priority": 10, "max_threads": 2 },
+    { "name": "Cluster-02", "priority": -10 }
   ],
   "smtp_server": "mail.example.local",
   "smtp_port": 25,
