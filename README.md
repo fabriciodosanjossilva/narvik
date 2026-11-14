@@ -41,6 +41,11 @@ Narvik is a backup automation for "IBM Storage Protect for VMWare" on Windows Se
 - Self-healing: detects dsmc error `ANS1715E` and retries the VM with
   `-VMBACKUPUPDATEGUID` and `-mode IFFull`; a backup only counts as
   successful when `dsmc` exits 0 and reports backed-up objects in its output.
+- dsmc error scanning: every line of a finished backup containing an
+  `ANS<digits>E` code is logged as a warning, starting at the code and running
+  to the end of the line. The critical codes `ANS1030E`, `ANS1706E`,
+  `ANS4169E` and `ANS4200E` are also emailed with the timestamp and the VM
+  being backed up; the same error type is not emailed again for 6 hours.
 - Knows the special cases that snapshot backups cannot serve, and excludes
   (with an alert) VMs that have RDM disks, names unsupported by the backup
   command, duplicate names, disks whose size is not a multiple of 1 MiB, or
@@ -61,9 +66,9 @@ Narvik is a backup automation for "IBM Storage Protect for VMWare" on Windows Se
   VM is backed up rather than risk one the operator asked to skip.
 - VMware Live Site Recovery placeholder VMs are skipped silently.
 - Email alerts: duplicate names, inventory rule violations, disk sizes not
-  aligned to 1 MiB, independent disks and fatal errors are mailed through
-  SMTP (optional SSL and authentication, credentials read from files); a fatal
-  exit attaches the full log.
+  aligned to 1 MiB, independent disks, critical dsmc errors and fatal errors
+  are mailed through SMTP (optional SSL and authentication, credentials read
+  from files); a fatal exit attaches the full log.
 - Monitoring hooks: writes `eligible_count.txt`, `eligible_vms.txt` and
   `pending_count.txt` so external tooling can watch the queue.
 - Logs: one log per VM backup plus a daily-rotated main log. Setting

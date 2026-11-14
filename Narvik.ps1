@@ -60,6 +60,8 @@ $script:DiskSizeCases = @()
 $script:LastFull = @{}
 $script:IndependentDisks = @()
 $script:DuplicateGuid = @{}
+# Error codes that are always reported by email when found in dsmc output.
+$script:CriticalAnsErrors = @('ANS1030E', 'ANS1706E', 'ANS4169E', 'ANS4200E')
 $script:State = @{
     failed_attempts = @{}
     duplicate_guid = @()
@@ -67,6 +69,7 @@ $script:State = @{
     duplicate_name_alerts = @{}
     inventory_rule_alerts = @{}
     disk_size_alerts = @{}
+    critical_error_alerts = @{}
 }
 $script:ProcessLockStream = $null
 $script:ProcessLockFile = $null
@@ -813,6 +816,7 @@ function Load-NarvikState {
         inventory_rule_alerts = @{}
         disk_size_alerts      = @{}
         priority_cluster_alerts = @{}
+        critical_error_alerts = @{}
     }
 
     $path = Join-Path $script:ControlDir 'state.json'
@@ -881,6 +885,15 @@ function Load-NarvikState {
                 }
             }
         }
+
+        if ($null -ne $object.critical_error_alerts) {
+            foreach ($property in $object.critical_error_alerts.PSObject.Properties) {
+                $parsed = ConvertFrom-NarvikIsoDate -Value ([string]$property.Value)
+                if ($null -ne $parsed) {
+                    $script:State.critical_error_alerts[$property.Name] = $parsed
+                }
+            }
+        }
     }
     catch {
         Write-NarvikLog -Level WARNING -Message "State file '$path' is invalid: $($_.Exception.Message)"
@@ -933,6 +946,11 @@ function Save-NarvikState {
         $priorityClusterAlerts[$name] = $script:State.priority_cluster_alerts[$name].ToString('o')
     }
 
+    $criticalErrorAlerts = @{}
+    foreach ($name in $script:State.critical_error_alerts.Keys) {
+        $criticalErrorAlerts[$name] = $script:State.critical_error_alerts[$name].ToString('o')
+    }
+
     $lastIdle = $null
     if ($null -ne $script:State.last_idle) {
         $lastIdle = $script:State.last_idle.ToString('o')
@@ -946,6 +964,7 @@ function Save-NarvikState {
         inventory_rule_alerts = $inventoryAlerts
         disk_size_alerts      = $diskSizeAlerts
         priority_cluster_alerts = $priorityClusterAlerts
+        critical_error_alerts = $criticalErrorAlerts
     }
 
     $json = $object | ConvertTo-Json -Depth 10
@@ -3609,6 +3628,102 @@ function Update-NarvikPendingMonitoring {
     Write-NarvikAtomicText -Path (Join-Path $script:MonitoringDir 'pending_count.txt') -Content $content
 }
 
+function Invoke-NarvikAnsErrorScan {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Job,
+
+        [AllowEmptyString()]
+        [string]$Content
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Content)) {
+        return
+    }
+
+    $criticalHits = @{}
+    foreach ($line in @($Content -split "\r?\n")) {
+        $lineMatches = [regex]::Matches($line, 'ANS\d+E')
+        if ($lineMatches.Count -eq 0) {
+            continue
+        }
+
+        # One warning per matching line, starting at the first code.
+        Write-NarvikLog -Level WARNING -Message "VM '$($Job.VmName)' output: $($line.Substring([int]$lineMatches[0].Index))"
+
+        foreach ($found in $lineMatches) {
+            $code = [string]$found.Value
+            if ($script:CriticalAnsErrors -contains $code) {
+                if (-not $criticalHits.ContainsKey($code)) {
+                    $criticalHits[$code] = New-Object 'System.Collections.Generic.List[string]'
+                }
+                [void]$criticalHits[$code].Add($line.Substring([int]$found.Index))
+            }
+        }
+    }
+
+    if ($criticalHits.Count -eq 0) {
+        return
+    }
+
+    if (-not (Test-NarvikMailEnabled)) {
+        Write-NarvikLog -Level DEBUG -Message "SMTP server is not configured; critical dsmc error alert for VM '$($Job.VmName)' skipped."
+        return
+    }
+
+    $now = Get-Date
+    $dueCodes = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($code in @($criticalHits.Keys | Sort-Object)) {
+        $lastAlert = $null
+        if ($script:State.critical_error_alerts.ContainsKey($code)) {
+            $lastAlert = $script:State.critical_error_alerts[$code]
+        }
+
+        if ($null -ne $lastAlert) {
+            $ageHours = ($now - $lastAlert).TotalHours
+            if ($ageHours -lt 6) {
+                Write-NarvikLog -Level INFO -Message "Critical dsmc error $code was already reported at $($lastAlert.ToString('yyyy-MM-dd HH:mm:ss')); alert suppressed for 6 hours."
+                continue
+            }
+        }
+
+        [void]$dueCodes.Add($code)
+    }
+
+    if ($dueCodes.Count -eq 0) {
+        return
+    }
+
+    $sentCodes = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($code in $dueCodes) {
+        $body = New-Object System.Text.StringBuilder
+        [void]$body.AppendLine("Narvik detected critical dsmc error $code while backing up a VM.")
+        [void]$body.AppendLine('')
+        [void]$body.AppendLine("VM: '$($Job.VmName)'")
+        [void]$body.AppendLine("Host: '$($Job.HostName)'")
+        [void]$body.AppendLine("Mode: $($Job.Mode)")
+        [void]$body.AppendLine("Backup started: $($Job.StartTime.ToString('yyyy-MM-dd HH:mm:ss'))")
+        [void]$body.AppendLine("Reported at: $($now.ToString('yyyy-MM-dd HH:mm:ss'))")
+        [void]$body.AppendLine('')
+        [void]$body.AppendLine('Error message(s):')
+        foreach ($message in @($criticalHits[$code])) {
+            [void]$body.AppendLine("  - $message")
+        }
+
+        $subject = "[Narvik] Critical dsmc error $code on VM '$($Job.VmName)'"
+        $sent = Send-NarvikMail -Subject $subject -Body $body.ToString()
+        if ($sent) {
+            [void]$sentCodes.Add($code)
+            $script:State.critical_error_alerts[$code] = $now
+        }
+    }
+
+    if ($sentCodes.Count -gt 0) {
+        Save-NarvikState
+        Write-NarvikLog -Level INFO -Message "Critical dsmc error alert sent for $($sentCodes.Count) error type(s) on VM '$($Job.VmName)'."
+    }
+}
+
 function Complete-NarvikJobs {
     $completedAny = $false
     $now = Get-Date
@@ -3633,6 +3748,8 @@ function Complete-NarvikJobs {
         if (-not [string]::IsNullOrEmpty($remainingError)) {
             $content = $content + "`r`n" + $remainingError
         }
+
+        Invoke-NarvikAnsErrorScan -Job $job -Content $content
 
         $exitCode = $null
         try {

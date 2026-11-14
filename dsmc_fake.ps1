@@ -16,6 +16,11 @@
 #     failure is certain and carries no duplicate GUID code, so Narvik
 #     records it as an ordinary failed attempt; "_err" takes precedence over
 #     "_dup" when a name contains both.
+#   - If the VM name contains "_crit", the backup always fails with a critical
+#     error code ($CriticalErrorAnsCode, one of the codes Narvik emails as a
+#     critical dsmc error) printed at the _ERR_ marker, so the critical error
+#     email and its 6-hour suppression can be tested end to end. "_err" takes
+#     precedence over "_crit", and "_crit" takes precedence over "_dup".
 #   - If the VM name contains "_dup" and the backup is not a Full one, the
 #     backup fails: the template is printed only down to its _ERR_ marker,
 #     where an ANS1715E error line is printed and the script stops with exit
@@ -81,6 +86,7 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File dsmc_fake.ps1 backup vm SRV-DB01_err -vmmc=GOLD
 #   powershell -NoProfile -ExecutionPolicy Bypass -File dsmc_fake.ps1 backup vm SRV-DB01_dup -vmmc=GOLD
 #   powershell -NoProfile -ExecutionPolicy Bypass -File dsmc_fake.ps1 backup vm SRV-DB01_dup -vmmc=GOLD -VMBACKUPUPDATEGUID -mode IFFull
+#   powershell -NoProfile -ExecutionPolicy Bypass -File dsmc_fake.ps1 backup vm SRV-DB01_crit -vmmc=GOLD
 #
 # Notes:
 #   - Compatible with Windows PowerShell 5.1 (no PowerShell 7 syntax).
@@ -100,6 +106,10 @@ $ErrorAnsCode = 'ANS1715E'
 # that must never look like the duplicate GUID case, so its code differs from
 # $ErrorAnsCode.
 $PlainErrorAnsCode = 'ANS1512E'
+
+# Error reported when the VM name contains "_crit": a critical failure Narvik
+# reports by email (one of its critical dsmc error codes).
+$CriticalErrorAnsCode = 'ANS1030E'
 
 # Exit code for a failed backup (dsmc convention); shared by the duplicate
 # GUID error, the "_err" forced failure and the random silent failure.
@@ -345,15 +355,19 @@ if ($isFull) {
 # GUID code: it takes precedence over every other rule below.
 $isForcedError = $vmName -like '*_err*'
 
+# A "_crit" VM always fails with the critical error Narvik emails; it also
+# takes precedence over the duplicate GUID rule below.
+$isCriticalError = (-not $isForcedError) -and ($vmName -like '*_crit*')
+
 # A "_dup" VM fails with the duplicate GUID error only when the backup is not
 # a Full one, so the retry Narvik schedules (-VMBACKUPUPDATEGUID with
 # -mode IFFull) always succeeds.
-$isDuplicate = (-not $isForcedError) -and ($vmName -like '*_dup*') -and (-not $isFull)
+$isDuplicate = (-not $isForcedError) -and (-not $isCriticalError) -and ($vmName -like '*_dup*') -and (-not $isFull)
 
 # Every other VM name is backed up normally, but each attempt has a
 # $RandomFailurePercent percent chance of failing silently: no output, no
 # error code, the script just exits with the backup-failure exit code.
-$isRandomFailure = (-not $isForcedError) -and (-not ($vmName -like '*_dup*')) -and ((Get-Random -Minimum 0 -Maximum 100) -lt $RandomFailurePercent)
+$isRandomFailure = (-not $isForcedError) -and (-not $isCriticalError) -and (-not ($vmName -like '*_dup*')) -and ((Get-Random -Minimum 0 -Maximum 100) -lt $RandomFailurePercent)
 
 if ($isRandomFailure) {
     Update-NkFakeVmNotes -VmName $vmName -Success $false -Full $isFull
@@ -361,7 +375,7 @@ if ($isRandomFailure) {
 }
 
 $result = '1'
-if ($isForcedError -or $isDuplicate) {
+if ($isForcedError -or $isCriticalError -or $isDuplicate) {
     $result = '0'
 }
 
@@ -463,6 +477,11 @@ foreach ($line in ($template -split "`r?`n")) {
             Update-NkFakeVmNotes -VmName $vmName -Success $false -Full $isFull
             exit $FailureExitCode
         }
+        if ($isCriticalError) {
+            Write-Output ($CriticalErrorAnsCode + ' The backup of virtual machine failed because of a critical storage error.')
+            Update-NkFakeVmNotes -VmName $vmName -Success $false -Full $isFull
+            exit $FailureExitCode
+        }
         if ($isDuplicate) {
             Write-Output ($ErrorAnsCode + ' The backup of virtual machine failed because a duplicate virtual machine GUID was detected.')
             Update-NkFakeVmNotes -VmName $vmName -Success $false -Full $isFull
@@ -486,7 +505,7 @@ foreach ($line in ($template -split "`r?`n")) {
 # Safety net: a failing backup must never exit with 0, even if the template
 # above has no _ERR_ marker. (The random silent failure has already exited
 # above.)
-if ($isForcedError -or $isDuplicate) {
+if ($isForcedError -or $isCriticalError -or $isDuplicate) {
     Update-NkFakeVmNotes -VmName $vmName -Success $false -Full $isFull
     exit $FailureExitCode
 }
