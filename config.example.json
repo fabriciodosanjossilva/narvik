@@ -1,5 +1,5 @@
 {
-  "log_level": "Info",
+  "debug": false,
   "check_administrator_privilege": false,
   "bypass_security": false,
   "dsmc_path": "C:\\Program Files\\Tivoli\\TSM\\baclient\\dsmc.exe",

@@ -474,7 +474,7 @@ function Import-NarvikConfig {
     }
 
     $knownKeys = @(
-        'log_level',
+        'debug',
         'check_administrator_privilege',
         'bypass_security',
         'dsmc_path',
@@ -499,15 +499,16 @@ function Import-NarvikConfig {
 
     foreach ($propertyName in $config.PSObject.Properties.Name) {
         if ($knownKeys -notcontains $propertyName) {
-            Write-NarvikLog -Level WARNING -Message "Unknown configuration key '$propertyName' will be ignored."
+            if ($propertyName -eq 'log_level') {
+                Write-NarvikLog -Level WARNING -Message "Configuration key 'log_level' was renamed to 'debug' and will be ignored."
+            }
+            else {
+                Write-NarvikLog -Level WARNING -Message "Unknown configuration key '$propertyName' will be ignored."
+            }
         }
     }
 
-    $logLevel = [string](Get-NarvikConfigValue -Config $config -Key 'log_level' -Required)
-    $logLevel = $logLevel.ToUpperInvariant()
-    if (@('DEBUG', 'INFO', 'WARNING', 'ERROR') -notcontains $logLevel) {
-        throw [System.Exception]::new("Configuration key 'log_level' must be Debug, Info, Warning or Error.")
-    }
+    $debug = ConvertTo-NarvikBoolean -Value (Get-NarvikConfigValue -Config $config -Key 'debug' -Default $false) -KeyName 'debug'
 
     $dsmcPathValue = [string](Get-NarvikConfigValue -Config $config -Key 'dsmc_path' -Required)
     if ([string]::IsNullOrWhiteSpace($dsmcPathValue)) {
@@ -728,7 +729,7 @@ function Import-NarvikConfig {
     }
 
     return [pscustomobject]@{
-        log_level                             = $logLevel
+        debug                                 = $debug
         check_administrator_privilege         = $checkAdministratorPrivilege
         bypass_security                       = $bypassSecurity
         dsmc_path                             = $dsmcPath
@@ -1344,7 +1345,20 @@ function Update-NarvikRuntimeConfig {
         $newFingerprint = Get-NarvikVCenterFingerprint -Config $newConfig
 
         $script:Config = $newConfig
-        $script:LogLevel = $newConfig.log_level.ToUpperInvariant()
+        $newLogLevel = 'INFO'
+        if ($newConfig.debug) {
+            $newLogLevel = 'DEBUG'
+        }
+        $logLevelChanged = ($newLogLevel -ne $script:LogLevel)
+        $script:LogLevel = $newLogLevel
+        if ($logLevelChanged) {
+            if ($newLogLevel -eq 'DEBUG') {
+                Write-NarvikLog -Level INFO -Message 'Debug logging enabled by configuration.'
+            }
+            else {
+                Write-NarvikLog -Level INFO -Message 'Debug logging disabled by configuration.'
+            }
+        }
 
         if ($null -ne $oldFingerprint -and $oldFingerprint -ne $newFingerprint) {
             Write-NarvikLog -Level INFO -Message 'vCenter connection settings changed; invalidating cached inventory.'
@@ -1443,7 +1457,7 @@ function Initialize-Narvik {
     Write-NarvikLog -Level INFO -Message "Narvik $($script:ScriptVersion) starting."
     Write-NarvikLog -Level INFO -Message "Root directory: '$($script:RootPath)'."
     Write-NarvikLog -Level INFO -Message "Process ID: $PID."
-    Write-NarvikLog -Level INFO -Message "Log level: $($script:Config.log_level)."
+    Write-NarvikLog -Level INFO -Message "Debug logging: $($script:Config.debug)."
     Write-NarvikLog -Level INFO -Message "vCenter: '$($script:Config.vcenter_server):$($script:Config.vcenter_port)' as '$($script:Config.vcenter_user)'."
     Write-NarvikLog -Level INFO -Message "dsmc: '$($script:Config.dsmc_path)'; preview mode: $($script:Config.dsmc_use_preview)."
     Write-NarvikLog -Level INFO -Message "Maximum concurrent backups: $($script:Config.max_backup_threads)."
@@ -1608,6 +1622,7 @@ function Get-NarvikVCenterData {
         $tagAssignments = @()
         try {
             $tagAssignments = @(Get-TagAssignment -ErrorAction Stop | Where-Object { $null -ne $_ })
+            Write-NarvikLog -Level DEBUG -Message "Collected $($tagAssignments.Count) vCenter tag assignment(s)."
         }
         catch {
             if (-not [string]::IsNullOrWhiteSpace([string]$script:Config.dont_backup_by_snapshot_tag_name)) {
@@ -1777,17 +1792,20 @@ function Get-NarvikVCenterData {
 
         foreach ($vmView in $vmViews) {
             if ($null -eq $vmView.Config) {
+                Write-NarvikLog -Level DEBUG -Message "VM '$([string]$vmView.Name)' has no configuration data; skipped."
                 continue
             }
 
             # VMware Live Site Recovery placeholders are ignored silently. Templates are
             # kept in the inventory and remain subject to the normal eligibility rules.
             if (Test-NarvikSiteRecoveryPlaceholder -View $vmView) {
+                Write-NarvikLog -Level DEBUG -Message "VM '$([string]$vmView.Name)' is a VMware Live Site Recovery placeholder; skipped."
                 continue
             }
 
             $vmName = [string]$vmView.Name
             if ([string]::IsNullOrWhiteSpace($vmName)) {
+                Write-NarvikLog -Level DEBUG -Message 'A VM without a name was skipped during inventory collection.'
                 continue
             }
 
@@ -1858,6 +1876,7 @@ function Get-NarvikVCenterData {
             }
             elseif (-not [string]::IsNullOrWhiteSpace($notes)) {
                 $notesParseWarnings++
+                Write-NarvikLog -Level DEBUG -Message "VM '$vmName' has Notes but no valid <Backup ...> tag; its last backup is unknown."
             }
 
             $disks = [System.Collections.Generic.List[object]]::new()
@@ -2040,6 +2059,8 @@ function Update-NarvikVCenterCache {
     if ($null -ne $script:LastVCenterAttempt -and $script:LastVCenterAttempt -ne [datetime]::MinValue) {
         $sinceAttempt = ($now - $script:LastVCenterAttempt).TotalSeconds
         if ($sinceAttempt -lt 60) {
+            $remainingSeconds = [math]::Ceiling(60 - $sinceAttempt)
+            Write-NarvikLog -Level DEBUG -Message "vCenter inventory refresh delayed for $remainingSeconds more second(s) after the last collection attempt."
             if ($null -ne $script:VCache) {
                 return $true
             }
@@ -2254,6 +2275,7 @@ function Update-NarvikEligibility {
     $unsupportedNamePattern = '[:;''"*?,<>/\\|\[\]}{]'
 
     if ($null -eq $script:VCache) {
+        Write-NarvikLog -Level DEBUG -Message 'No vCenter inventory is cached; eligibility and backup scheduling are paused.'
         $script:EligibleVMs = @()
         $script:NonEligibleVMs = @()
         $script:DuplicateNameCases = @()
@@ -2443,6 +2465,7 @@ function Update-NarvikEligibility {
         foreach ($entry in $script:NonEligibleVMs) {
             Write-NarvikLog -Level INFO -Message "VM '$($entry.VM.Name)' is not eligible: $(@($entry.Reasons) -join '; ')."
         }
+        Write-NarvikLog -Level DEBUG -Message "Eligibility updated: $(@($script:EligibleVMs).Count) VM(s) eligible, $(@($script:NonEligibleVMs).Count) non-eligible."
         $script:NonEligibleSignature = $signature
     }
 
@@ -2471,6 +2494,7 @@ function Send-NarvikDuplicateNameAlerts {
     }
 
     if (-not (Test-NarvikMailEnabled)) {
+        Write-NarvikLog -Level DEBUG -Message 'SMTP server is not configured; duplicate VM name alert skipped.'
         return
     }
 
@@ -2539,6 +2563,7 @@ function Send-NarvikInventoryRuleAlerts {
     }
 
     if (-not (Test-NarvikMailEnabled)) {
+        Write-NarvikLog -Level DEBUG -Message 'SMTP server is not configured; inventory rule alert skipped.'
         return
     }
 
@@ -2693,6 +2718,7 @@ function Send-NarvikDiskSizeAlerts {
     }
 
     if (-not (Test-NarvikMailEnabled)) {
+        Write-NarvikLog -Level DEBUG -Message 'SMTP server is not configured; disk size alert skipped.'
         return
     }
 
@@ -2770,6 +2796,7 @@ function Send-NarvikPriorityClusterAlerts {
     }
 
     if (-not (Test-NarvikMailEnabled)) {
+        Write-NarvikLog -Level DEBUG -Message 'SMTP server is not configured; priority cluster alert skipped.'
         return
     }
 
@@ -2874,6 +2901,10 @@ function Update-NarvikIndependentDiskControl {
         }
     }
     $script:IndependentDisks = @($kept)
+
+    if ($SendAlerts -and -not (Test-NarvikMailEnabled)) {
+        Write-NarvikLog -Level DEBUG -Message 'SMTP server is not configured; independent disk alert skipped.'
+    }
 
     if ($SendAlerts -and (Test-NarvikMailEnabled)) {
         $now = Get-Date
@@ -3056,6 +3087,7 @@ function Select-NarvikNextBackup {
     if ($pending.Count -gt 0) {
         foreach ($vm in $pending) {
             if (Test-NarvikVmActive -VmName $vm.Name) {
+                Write-NarvikLog -Level DEBUG -Message "VM '$($vm.Name)' already has an active backup; skipping."
                 continue
             }
 
@@ -3080,6 +3112,9 @@ function Select-NarvikNextBackup {
             }
 
             $forceFull = $script:DuplicateGuid.ContainsKey($vm.Name)
+            if ($forceFull) {
+                Write-NarvikLog -Level DEBUG -Message "VM '$($vm.Name)' has the duplicate GUID flag; the next backup will use -VMBACKUPUPDATEGUID and -mode IFFull."
+            }
             return [pscustomobject]@{
                 VM        = $vm
                 Mode      = 'Incremental'
@@ -3094,24 +3129,29 @@ function Select-NarvikNextBackup {
     $isWeekend = ($now.DayOfWeek -eq [System.DayOfWeek]::Saturday -or $now.DayOfWeek -eq [System.DayOfWeek]::Sunday)
     $isBeforeEight = ($now.TimeOfDay -lt [TimeSpan]'08:00:00')
     if (-not $isWeekend -and -not $isBeforeEight) {
+        Write-NarvikLog -Level DEBUG -Message "Full backups are only attempted on weekends or before 08:00; it is now $($now.ToString('yyyy-MM-dd HH:mm:ss')); no full backup will be started."
         return $null
     }
 
     $fullCandidates = [System.Collections.Generic.List[object]]::new()
     foreach ($vm in @($script:EligibleVMs)) {
         if (Test-NarvikVmActive -VmName $vm.Name) {
+            Write-NarvikLog -Level DEBUG -Message "VM '$($vm.Name)' already has an active backup; full backup skipped."
             continue
         }
 
         if ([string]::IsNullOrWhiteSpace($vm.HostName)) {
+            Write-NarvikLog -Level DEBUG -Message "VM '$($vm.Name)' has no host information; full backup will not be started."
             continue
         }
 
         if (Test-NarvikBackoffActive -VmName $vm.Name -Now $now) {
+            Write-NarvikLog -Level DEBUG -Message "VM '$($vm.Name)' is in failure backoff; full backup skipped."
             continue
         }
 
         if (Test-NarvikHostActive -HostName $vm.HostName) {
+            Write-NarvikLog -Level DEBUG -Message "VM '$($vm.Name)' shares host '$($vm.HostName)' with an active backup; full backup skipped."
             continue
         }
 
@@ -3137,6 +3177,7 @@ function Select-NarvikNextBackup {
     }
 
     if ($fullCandidates.Count -eq 0) {
+        Write-NarvikLog -Level DEBUG -Message 'No eligible VM is due for a full backup; every recorded full backup is newer than 30 days.'
         return $null
     }
 
@@ -3601,7 +3642,8 @@ function Complete-NarvikJobs {
             $exitCode = $null
         }
 
-        $success = ($null -ne $exitCode -and $exitCode -eq 0 -and $content -match 'Total number of objects backed up: +1')
+        $objectsBackedUp = ($content -match 'Total number of objects backed up: +1')
+        $success = ($null -ne $exitCode -and $exitCode -eq 0 -and $objectsBackedUp)
         $logWriteTime = $now
         try {
             if (Test-Path -LiteralPath $job.LogPath -PathType Leaf) {
@@ -3631,11 +3673,14 @@ function Complete-NarvikJobs {
             Clear-NarvikDuplicateGuid -VmName $job.VmName
         }
         else {
-            $exitText = 'unknown'
-            if ($null -ne $exitCode) {
-                $exitText = [string]$exitCode
+            $failureDetail = 'exit code unavailable'
+            if ($null -ne $exitCode -and $exitCode -ne 0) {
+                $failureDetail = "exit code $exitCode"
             }
-            Write-NarvikLog -Level ERROR -Message "Backup failed for VM '$($job.VmName)' (PID $($job.Process.Id), exit code $exitText)."
+            elseif ($null -ne $exitCode -and -not $objectsBackedUp) {
+                $failureDetail = 'exit code 0 but output did not report a backed-up object'
+            }
+            Write-NarvikLog -Level ERROR -Message "Backup failed for VM '$($job.VmName)' (PID $($job.Process.Id), $failureDetail)."
 
             $tailLines = @($content -split "\r?\n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
             if ($tailLines.Count -gt 0) {
@@ -3719,6 +3764,12 @@ function Write-NarvikStats {
 
     $script:LastStatsLog = $now
     $script:LastStatsSignature = $signature
+
+    if ($null -ne $script:VCache) {
+        $cacheAgeMinutes = [math]::Round(($now - $script:VCache.CollectedAt).TotalMinutes, 1)
+        $baselineText = (Get-NarvikBaseline -Now $now).ToString('yyyy-MM-dd HH:mm:ss')
+        Write-NarvikLog -Level DEBUG -Message "Inventory cache collected at $($script:VCache.CollectedAt.ToString('yyyy-MM-dd HH:mm:ss')) (age $cacheAgeMinutes minute(s)); incremental baseline $baselineText; pending $($pending.Count) VM(s)."
+    }
 
     Write-NarvikLog -Level INFO -Message "Pending waiting: $($waiting.Count) VM(s), $([math]::Round($waitingSize, 2)) GB."
 
@@ -3865,6 +3916,9 @@ function Invoke-NarvikMain {
         }
         else {
             $startedAny = $false
+            if ($script:ActiveJobs.Count -ge $script:Config.max_backup_threads) {
+                Write-NarvikLog -Level DEBUG -Message "Global backup limit reached ($($script:ActiveJobs.Count) of $($script:Config.max_backup_threads) active); no new backup will be started this cycle."
+            }
             while ($script:ActiveJobs.Count -lt $script:Config.max_backup_threads) {
                 $selection = Select-NarvikNextBackup
                 if ($null -eq $selection) {
