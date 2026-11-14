@@ -35,7 +35,8 @@ Narvik is a backup automation for "IBM Storage Protect for VMWare" on Windows Se
   cluster that does not exist in vCenter are logged and reported by email at
   most once every 24 hours.
 - Failure backoff: a VM that keeps failing is retried with an increasing
-  delay, capped at 12 hours, instead of hammering the backup server.
+  delay (one minute, then quadrupling on every further failure), capped at
+  12 hours, instead of hammering the backup server.
 - Self-healing: detects dsmc error `ANS1715E` and retries the VM with
   `-VMBACKUPUPDATEGUID` and `-mode IFFull`; a backup only counts as
   successful when `dsmc` exits 0 and reports backed-up objects in its output.

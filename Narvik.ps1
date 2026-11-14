@@ -3060,9 +3060,9 @@ function Test-NarvikBackoffActive {
 
     $exponent = $count - 1
 
-    # The first retry comes after one minute and doubles on every further
+    # The first retry comes after one minute and quadruples on every further
     # failure.
-    $minutes = [math]::Pow(2, $exponent)
+    $minutes = [math]::Pow(4, $exponent)
 
     # Cap the backoff at 12 hours (720 minutes) so a VM that keeps failing
     # is still retried at least twice a day.

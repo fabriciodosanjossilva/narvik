@@ -422,7 +422,7 @@ $viewWithoutTags = [pscustomobject]@{ MoRef = [pscustomobject]@{ Value = 'datast
 Assert-NkEqual -Name 'VIEWTAG-04 a view without assignments yields an empty list' -Expected 0 -Actual @(Get-NarvikViewTags -View $viewWithoutTags -TagMap $tagMap).Count
 
 # ---------------------------------------------------------------------------
-# Failure backoff: one minute, doubling, capped at 12 hours.
+# Failure backoff: one minute, quadrupling, capped at 12 hours.
 # ---------------------------------------------------------------------------
 
 $script:State = @{ failed_attempts = @{} }
@@ -432,9 +432,10 @@ Assert-NkTrue -Name 'BACKOFF-02 the first retry waits one minute' -Condition (Te
 $script:State.failed_attempts['nk-a'] = @{ last_attempt = [datetime]'2026-11-13 09:58:00'; count = 1 }
 Assert-NkTrue -Name 'BACKOFF-03 the backoff expires after one minute' -Condition (-not (Test-NarvikBackoffActive -VmName 'nk-a' -Now ([datetime]'2026-11-13 10:00:00')))
 $script:State.failed_attempts['nk-a'] = @{ last_attempt = [datetime]'2026-11-13 09:59:00'; count = 3 }
-Assert-NkTrue -Name 'BACKOFF-04 the third failure waits four minutes' -Condition (Test-NarvikBackoffActive -VmName 'nk-a' -Now ([datetime]'2026-11-13 10:02:00'))
+Assert-NkTrue -Name 'BACKOFF-04 the third failure waits sixteen minutes' -Condition (Test-NarvikBackoffActive -VmName 'nk-a' -Now ([datetime]'2026-11-13 10:14:00'))
+Assert-NkTrue -Name 'BACKOFF-05 the sixteen-minute backoff expires' -Condition (-not (Test-NarvikBackoffActive -VmName 'nk-a' -Now ([datetime]'2026-11-13 10:16:00')))
 $script:State.failed_attempts['nk-a'] = @{ last_attempt = [datetime]'2026-11-12 10:00:00'; count = 20 }
-Assert-NkTrue -Name 'BACKOFF-05 the backoff is capped at twelve hours' -Condition ((Test-NarvikBackoffActive -VmName 'nk-a' -Now ([datetime]'2026-11-13 10:00:00')) -eq $false)
+Assert-NkTrue -Name 'BACKOFF-06 the backoff is capped at twelve hours' -Condition ((Test-NarvikBackoffActive -VmName 'nk-a' -Now ([datetime]'2026-11-13 10:00:00')) -eq $false)
 
 # ---------------------------------------------------------------------------
 # VMware Live Site Recovery placeholders use Config.ManagedBy.
