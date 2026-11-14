@@ -1672,6 +1672,20 @@ function Invoke-NkPhaseInventory {
             Assert-NkTrue -Name 'INV-12b no tag reason is logged when the rule is disabled' -Condition ($resultNoTag.Log -notmatch $tagReasonPattern) -Detail "found 'tag '$($script:UseTagName)'"
         }
     }
+
+    # An entry in priority_clusters that names no live compute cluster is
+    # detected during collection and logged. The email itself needs SMTP,
+    # which this lab does not have.
+    $missingClusterName = 'nk-priority-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $rootPriority = New-NkRuntimeRoot -Name 'inventory-priority' -Overrides @{
+        priority_clusters = @(@{ name = $missingClusterName; priority = 10 })
+    }
+    $resultPriority = Invoke-NkInventoryRun -Root $rootPriority -Label 'inventory-priority'
+    Assert-NkTrue -Name 'INV-13 inventory collection completes with priority_clusters configured' -Condition $resultPriority.Collected -Detail (Get-NkLogTail -Root $rootPriority -Lines 8)
+    if ($resultPriority.Collected) {
+        $expectedWarning = "Cluster '$missingClusterName' from 'priority_clusters' was not found in the environment."
+        Assert-NkTrue -Name 'INV-14 an unknown priority cluster is logged during collection' -Condition (Test-NkContains -Text $resultPriority.Log -Needle $expectedWarning) -Detail (Get-NkLogTail -Root $rootPriority -Lines 8)
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -1886,7 +1900,17 @@ function Invoke-NkPhaseConfig {
         @{ Id = 'CFG-18'; Name = 'invalid bypass_security value'; Kind = 'Overrides'; Overrides = @{ bypass_security = 'maybe' }; Expect = 'bypass_security' },
         @{ Id = 'CFG-19'; Name = 'SMTP user without a password file'; Kind = 'Overrides'; Overrides = @{ smtp_server = 'smtp.example.local'; smtp_username = 'user'; smtp_password_file = '' }; Expect = "'smtp_password_file' is required" },
         @{ Id = 'CFG-20'; Name = 'invalid mail_from address'; Kind = 'Overrides'; Overrides = @{ smtp_server = 'smtp.example.local'; mail_from = 'not-an-address' }; Expect = "'mail_from' is not a valid email address" },
-        @{ Id = 'CFG-21'; Name = 'unknown key is warned about'; Kind = 'Overrides'; Overrides = @{ bogus_key = 1; vcenter_server = 'https://bad' }; Expect = "Unknown configuration key 'bogus_key'" }
+        @{ Id = 'CFG-21'; Name = 'unknown key is warned about'; Kind = 'Overrides'; Overrides = @{ bogus_key = 1; vcenter_server = 'https://bad' }; Expect = "Unknown configuration key 'bogus_key'" },
+        @{ Id = 'CFG-22'; Name = 'priority_clusters is not an array'; Kind = 'Overrides'; Overrides = @{ priority_clusters = 'CL1' }; Expect = "'priority_clusters' must be an array" },
+        @{ Id = 'CFG-23'; Name = 'priority_clusters contains a bare string'; Kind = 'Overrides'; Overrides = @{ priority_clusters = @('CL1', 'CL2') }; Expect = "'priority_clusters' must contain objects" },
+        @{ Id = 'CFG-24'; Name = 'priority cluster entry without a name'; Kind = 'Overrides'; Overrides = @{ priority_clusters = @(@{ priority = 0 }) }; Expect = "without a non-empty 'name'" },
+        @{ Id = 'CFG-25'; Name = 'priority cluster entry with an empty name'; Kind = 'Overrides'; Overrides = @{ priority_clusters = @(@{ name = ''; priority = 0 }) }; Expect = "without a non-empty 'name'" },
+        @{ Id = 'CFG-26'; Name = 'non-integer cluster priority'; Kind = 'Overrides'; Overrides = @{ priority_clusters = @(@{ name = 'CL1'; priority = 'abc' }) }; Expect = 'contains a non-integer priority' },
+        @{ Id = 'CFG-27'; Name = 'cluster priority below -100'; Kind = 'Overrides'; Overrides = @{ priority_clusters = @(@{ name = 'CL1'; priority = -101 }) }; Expect = 'it must be between -100 and 100' },
+        @{ Id = 'CFG-28'; Name = 'cluster priority above 100'; Kind = 'Overrides'; Overrides = @{ priority_clusters = @(@{ name = 'CL1'; priority = 101 }) }; Expect = 'it must be between -100 and 100' },
+        @{ Id = 'CFG-29'; Name = 'cluster max_threads below one'; Kind = 'Overrides'; Overrides = @{ priority_clusters = @(@{ name = 'CL1'; priority = 0; max_threads = 0 }) }; Expect = 'it must be at least 1' },
+        @{ Id = 'CFG-30'; Name = 'duplicate cluster name ignoring case'; Kind = 'Overrides'; Overrides = @{ priority_clusters = @(@{ name = 'CL1'; priority = 1 }, @{ name = 'cl1'; priority = 2 }) }; Expect = 'more than once' },
+        @{ Id = 'CFG-31'; Name = 'non-integer cluster max_threads'; Kind = 'Overrides'; Overrides = @{ priority_clusters = @(@{ name = 'CL1'; priority = 0; max_threads = 'abc' }) }; Expect = 'non-integer max_threads' }
     )
 
     foreach ($case in $cases) {

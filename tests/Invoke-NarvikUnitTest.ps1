@@ -71,6 +71,7 @@ foreach ($name in @(
         'Get-NarvikPendingVMs',
         'Format-NarvikDiskSizeMiB',
         'Get-NarvikManagementClass',
+        'Get-NarvikPriorityClusterSetting',
         'Add-NarvikReason',
         'Update-NarvikEligibility',
         'Get-NarvikFolderPath',
@@ -80,6 +81,7 @@ foreach ($name in @(
         'Test-NarvikSiteRecoveryPlaceholder',
         'Test-NarvikVmActive',
         'Test-NarvikHostActive',
+        'Test-NarvikClusterAtCapacity',
         'Test-NarvikBackoffActive',
         'Select-NarvikNextBackup')) {
     . ([scriptblock]::Create((Get-NarvikFunctionText -Name $name)))
@@ -201,7 +203,9 @@ function New-NkSyntheticVm {
         [string[]]$ResourcePoolTags = @(),
         [object[]]$Disks = @(),
         $LastBackup = $null,
-        [string]$FolderPath = ''
+        [string]$FolderPath = '',
+        [int]$ClusterPriority = 0,
+        [int]$ClusterMaxThreads = 1000
     )
 
     return [pscustomobject]@{
@@ -214,6 +218,8 @@ function New-NkSyntheticVm {
         ClusterMoRef      = $ClusterName
         ClusterName       = $ClusterName
         ClusterTags       = @($ClusterTags)
+        ClusterPriority   = $ClusterPriority
+        ClusterMaxThreads = $ClusterMaxThreads
         ResourcePoolMoRef = 'resgroup-101'
         ResourcePoolName  = $ResourcePoolName
         ResourcePoolTags  = @($ResourcePoolTags)
@@ -491,6 +497,79 @@ Assert-NkTrue -Name 'SEL-08 the whole weekend is inside the full window' -Condit
 
 $script:FakeNow = [datetime]'2026-11-16 07:30:00'   # Monday before 08:00
 Assert-NkTrue -Name 'SEL-09 the full window is open before 08:00 on a weekday' -Condition ($null -ne (Select-NarvikNextBackup))
+
+# ---------------------------------------------------------------------------
+# Cluster priority and per-cluster concurrency cap.
+# ---------------------------------------------------------------------------
+
+$script:VCache = [pscustomobject]@{ VMs = @() }
+$script:ActiveJobs = @()
+$script:State = @{ failed_attempts = @{} }
+$script:DuplicateGuid = @{}
+$script:LastFull = @{}
+$script:FakeNow = [datetime]'2026-11-13 10:00:00'
+
+# Resolution: a listed cluster, an unlisted cluster and a VM outside a cluster.
+$script:Config = [pscustomobject]@{
+    priority_clusters = @{
+        'cluster-a' = [pscustomobject]@{ name = 'Cluster-A'; priority = 7; max_threads = 3 }
+    }
+}
+$setting = Get-NarvikPriorityClusterSetting -ClusterName 'cluster-a'
+Assert-NkEqual -Name 'PRIO-01 a listed cluster returns its configured values' -Expected '7|3|True' -Actual "$($setting.Priority)|$($setting.MaxThreads)|$($setting.Listed)"
+$setting = Get-NarvikPriorityClusterSetting -ClusterName 'Cluster-B'
+Assert-NkEqual -Name 'PRIO-02 an unlisted cluster keeps priority 0 and max_threads 1000' -Expected '0|1000|False' -Actual "$($setting.Priority)|$($setting.MaxThreads)|$($setting.Listed)"
+$setting = Get-NarvikPriorityClusterSetting -ClusterName ''
+Assert-NkEqual -Name 'PRIO-03 a VM outside a cluster keeps the defaults' -Expected '0|1000|False' -Actual "$($setting.Priority)|$($setting.MaxThreads)|$($setting.Listed)"
+
+$script:EligibleVMs = @(
+    (New-NkSyntheticVm -Name 'nk-negative' -HostName 'esx-neg' -FolderPath 'a' -ClusterName 'CL-NEG' -ClusterPriority -100 -LastBackup $null),
+    (New-NkSyntheticVm -Name 'nk-zero' -HostName 'esx-zero' -FolderPath 'a' -ClusterName 'CL-ZERO' -LastBackup $null),
+    (New-NkSyntheticVm -Name 'nk-positive' -HostName 'esx-pos' -FolderPath 'z' -ClusterName 'CL-POS' -ClusterPriority 100 -LastBackup $null)
+)
+Assert-NkEqual -Name 'PRIO-04 the highest cluster priority is selected first' -Expected 'nk-positive' -Actual ((Select-NarvikNextBackup).VM.Name)
+
+$script:EligibleVMs = @(
+    (New-NkSyntheticVm -Name 'nk-z' -HostName 'esx-z' -FolderPath 'z' -ClusterPriority 10 -LastBackup $null),
+    (New-NkSyntheticVm -Name 'nk-a' -HostName 'esx-a' -FolderPath 'a' -ClusterPriority 10 -LastBackup $null)
+)
+Assert-NkEqual -Name 'PRIO-05 the folder is the secondary criterion inside a priority' -Expected 'nk-a' -Actual ((Select-NarvikNextBackup).VM.Name)
+
+$script:EligibleVMs = @(
+    (New-NkSyntheticVm -Name 'nk-lowest' -HostName 'esx-low' -FolderPath 'a' -ClusterPriority -100 -LastBackup $null),
+    (New-NkSyntheticVm -Name 'nk-default' -HostName 'esx-default' -FolderPath 'z' -ClusterPriority 0 -LastBackup $null)
+)
+Assert-NkEqual -Name 'PRIO-06 a negative priority comes after the default priority' -Expected 'nk-default' -Actual ((Select-NarvikNextBackup).VM.Name)
+
+$script:FakeNow = [datetime]'2026-11-14 02:00:00'   # Saturday, inside the full window
+$script:EligibleVMs = @(
+    (New-NkSyntheticVm -Name 'nk-old-low' -HostName 'esx-old' -FolderPath 'a' -ClusterPriority -100 -LastBackup ([datetime]'2026-11-14 01:00:00')),
+    (New-NkSyntheticVm -Name 'nk-new-high' -HostName 'esx-new' -FolderPath 'z' -ClusterPriority 100 -LastBackup ([datetime]'2026-11-14 01:00:00'))
+)
+$script:LastFull = @{
+    'nk-old-low'  = [datetime]'2026-06-01 00:00:00'
+    'nk-new-high' = [datetime]'2026-10-01 00:00:00'
+}
+Assert-NkEqual -Name 'PRIO-07 a full backup honors cluster priority before the oldest full' -Expected 'nk-new-high' -Actual ((Select-NarvikNextBackup).VM.Name)
+
+$script:FakeNow = [datetime]'2026-11-13 10:00:00'
+$script:LastFull = @{}
+$script:ActiveJobs = @([pscustomobject]@{ VmName = 'nk-running'; HostName = 'esx-running'; ClusterName = 'CL-FULL' })
+$script:EligibleVMs = @(
+    (New-NkSyntheticVm -Name 'nk-blocked' -HostName 'esx-01' -FolderPath 'a' -ClusterName 'CL-FULL' -ClusterPriority 100 -ClusterMaxThreads 1 -LastBackup $null),
+    (New-NkSyntheticVm -Name 'nk-allowed' -HostName 'esx-02' -FolderPath 'z' -ClusterName 'CL-OTHER' -ClusterPriority 0 -LastBackup $null)
+)
+Assert-NkEqual -Name 'PRIO-08 a saturated cluster is skipped while another cluster starts' -Expected 'nk-allowed' -Actual ((Select-NarvikNextBackup).VM.Name)
+
+$script:ActiveJobs = @(
+    [pscustomobject]@{ VmName = 'nk-a'; HostName = 'esx-busy-1'; ClusterName = 'CL-OTHER' },
+    [pscustomobject]@{ VmName = 'nk-b'; HostName = 'esx-busy-2'; ClusterName = 'CL-OTHER' },
+    [pscustomobject]@{ VmName = 'nk-c'; HostName = 'esx-busy-3'; ClusterName = 'CL-OTHER' }
+)
+$script:EligibleVMs = @(New-NkSyntheticVm -Name 'nk-default-cap' -HostName 'esx-03' -ClusterName 'CL-OTHER' -ClusterMaxThreads 1000 -LastBackup $null)
+Assert-NkEqual -Name 'PRIO-09 the default max_threads does not block a small number of jobs' -Expected 'nk-default-cap' -Actual ((Select-NarvikNextBackup).VM.Name)
+
+$script:ActiveJobs = @()
 
 # ---------------------------------------------------------------------------
 # Eligibility wiring: the tag rule fail-safe

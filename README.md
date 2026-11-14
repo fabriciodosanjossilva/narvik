@@ -25,6 +25,15 @@ Narvik is a backup automation for "IBM Storage Protect for VMWare" on Windows Se
 - Concurrency control: caps simultaneous `dsmc` processes
   (`max_backup_threads`) and never starts two backups on the same ESXi host
   at the same time.
+- Cluster priority and caps: `priority_clusters` assigns each ESXi cluster an
+  integer priority from -100 to 100 and an optional `max_threads`
+  (default 1000). Eligible VMs are ordered by cluster priority first, higher
+  first and negative last, then by VM folder as before; a positive priority
+  moves the cluster ahead and a negative one moves it to the end. The per
+  cluster `max_threads` is an extra limit on concurrent backups, on top of the
+  global thread limit and the one-per-host rule. Config entries naming a
+  cluster that does not exist in vCenter are logged and reported by email at
+  most once every 24 hours.
 - Failure backoff: a VM that keeps failing is retried with an increasing
   delay, capped at 12 hours, instead of hammering the backup server.
 - Self-healing: detects dsmc error `ANS1715E` and retries the VM with

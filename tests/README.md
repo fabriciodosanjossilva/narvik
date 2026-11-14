@@ -40,7 +40,7 @@ line:
 | Phase | What it covers |
 | --- | --- |
 | `Preconditions` | Parser, ASCII check, offline unit suite, `dsmc` stand-in, read-only source audit, vCenter connection and version, lab guard rails, storage policy availability. |
-| `Inventory` | Read-only inventory collection, counts, tag reasons against live entities, every VM classified, no mutating vCenter task, tag rule on and off. |
+| `Inventory` | Read-only inventory collection, counts, tag reasons against live entities, every VM classified, no mutating vCenter task, tag rule on and off, unknown `priority_clusters` name logged. |
 | `Control` | `stop.txt`, `abort.txt`, second instance (exit code 3), configuration reload failure keeps the previous config. |
 | `Config` | Configuration validation errors. These runs abort before connecting, so this phase works without vCenter. |
 | `Fixtures` | Creates the `nk-` test VMs and folders. Needs the vCenter storage policy service. |
@@ -158,7 +158,11 @@ prove. Re-run the affected phase once the condition changes.
   cluster tag positives stay `SKIP` (`TAGS-14`, `TAGS-15`, `TAGS-16`).
 - **No `ClusterComputeResource` exists** in the lab. Creating one needs
   operator approval, so the cluster source of the tag rule has no live
-  positive. The helper is covered by the offline unit tests.
+  positive. The helper is covered by the offline unit tests. For the same
+  reason, `priority_clusters` priority ordering and the per-cluster
+  `max_threads` cap have no live cluster to run against: their behavior is
+  covered offline (`PRIO-01` to `PRIO-09`), while the lab verifies the
+  configuration validation and the unknown-name warning (`INV-13`, `INV-14`).
 - **Tag data unavailable fail-safe (`TAGS-17`).** Breaking the vAPI tag query
   without changing vCenter is not reliable, so the fail-safe path is covered by
   the offline unit tests (`ELIG-01`, `ELIG-02`, `ELIG-07`, `ELIG-08`).
