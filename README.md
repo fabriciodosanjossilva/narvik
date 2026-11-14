@@ -15,13 +15,14 @@ Narvik is a backup automation for "IBM Storage Protect for VMWare" on Windows Se
   reconfigures or deletes anything there.
 - Policy by placement: each datastore cluster maps to an IBM Storage
   Protect management class, so the backup policy follows where the VM lives.
-- Incremental backups: backs up any eligible VM whose last backup, read from
-  the timestamp `dsmc` writes to the VM Notes, is older than the nightly
-  20:00 baseline.
+- Incremental backups: backs up any eligible VM whose last incremental
+  backup, read from the `<Backup incremental successful in ...>` tag that
+  `dsmc` writes to the VM Notes, is older than the nightly 20:00 baseline.
 - Automatic full backups: repeats an "Incremental Forever - Full" backup when
-  the last one is more than 30 days old, only during the off-hours window
-  (weekends or before 08:00) and always oldest first; incrementals take
-  priority over fulls.
+  the last full, read from the `<Backup full successful in ...>` tag or
+  recorded after a successful full backup, is more than 30 days old, only
+  during the off-hours window (weekends or before 08:00) and always oldest
+  first; incrementals take priority over fulls.
 - Concurrency control: caps simultaneous `dsmc` processes
   (`max_backup_threads`) and never starts two backups on the same ESXi host
   at the same time.

@@ -1039,53 +1039,6 @@ function Save-NarvikIndependentDisks {
     Write-NarvikAtomicText -Path (Join-Path $script:ControlDir 'independent.json') -Content $json
 }
 
-function Get-NarvikDatesFromText {
-    param(
-        [string]$Text,
-        [string[]]$Formats
-    )
-
-    $results = New-Object 'System.Collections.Generic.List[datetime]'
-    if ([string]::IsNullOrWhiteSpace($Text)) {
-        return @()
-    }
-
-    $patterns = @(
-        '\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?',
-        '\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}:\d{2}'
-    )
-
-    foreach ($pattern in $patterns) {
-        foreach ($match in [regex]::Matches($Text, $pattern)) {
-            $value = $match.Value
-            $parsed = [datetime]::MinValue
-            $ok = $false
-
-            foreach ($format in $Formats) {
-                if ([datetime]::TryParseExact($value, $format, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind, [ref]$parsed)) {
-                    $ok = $true
-                    break
-                }
-            }
-
-            if (-not $ok) {
-                try {
-                    $parsed = [datetime]::Parse($value, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
-                    $ok = $true
-                }
-                catch {
-                }
-            }
-
-            if ($ok) {
-                [void]$results.Add($parsed)
-            }
-        }
-    }
-
-    return @($results)
-}
-
 function ConvertFrom-NarvikVmNotes {
     param(
         [string]$Notes
@@ -1095,51 +1048,41 @@ function ConvertFrom-NarvikVmNotes {
         return $null
     }
 
-    $formats = @(
-        'yyyy-MM-dd HH:mm:ss',
-        'yyyy-MM-ddTHH:mm:ss',
-        'yyyy-MM-ddTHH:mm:ss.fff',
-        'yyyy-MM-ddTHH:mm:ssZ',
-        'yyyy-MM-ddTHH:mm:ss.fffZ',
-        'yyyy-MM-ddTHH:mm:ssK',
-        'yyyy-MM-ddTHH:mm:ss.fffK',
-        'MM/dd/yyyy HH:mm:ss',
-        'M/d/yyyy H:mm:ss',
-        'dd/MM/yyyy HH:mm:ss',
-        'd/M/yyyy H:mm:ss'
-    )
+    # dsmc writes exactly one of these tags after a successful backup:
+    #   <Backup incremental successful in dd/MM/yyyy HH:mm:ss>
+    #   <Backup full successful in dd/MM/yyyy HH:mm:ss>
+    # The timestamp format and the word 'successful' are mandatory. Anything
+    # that does not match this fixed shape is ignored.
+    $pattern = '(?i)<Backup (incremental|full) successful in (\d{2}/\d{2}/\d{4} \d{2}:\d{2}:\d{2})>'
+    $incrementalDate = $null
+    $fullDate = $null
 
-    $backupDates = New-Object 'System.Collections.Generic.List[datetime]'
-    $lines = @($Notes -split "\r?\n")
-    foreach ($line in $lines) {
-        if ($line -match '(?i)backup') {
-            $dates = Get-NarvikDatesFromText -Text $line -Formats $formats
-            foreach ($date in $dates) {
-                [void]$backupDates.Add($date)
+    foreach ($match in [regex]::Matches($Notes, $pattern)) {
+        $mode = $match.Groups[1].Value.ToLowerInvariant()
+        $timestampText = $match.Groups[2].Value
+        $parsed = [datetime]::MinValue
+        if (-not [datetime]::TryParseExact($timestampText, 'dd/MM/yyyy HH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::None, [ref]$parsed)) {
+            continue
+        }
+
+        if ($mode -eq 'incremental') {
+            if ($null -eq $incrementalDate -or $parsed -gt $incrementalDate) {
+                $incrementalDate = $parsed
             }
         }
-    }
-
-    $candidates = $backupDates
-    if ($candidates.Count -eq 0) {
-        $allDates = Get-NarvikDatesFromText -Text $Notes -Formats $formats
-        foreach ($date in $allDates) {
-            [void]$candidates.Add($date)
+        elseif ($null -eq $fullDate -or $parsed -gt $fullDate) {
+            $fullDate = $parsed
         }
     }
 
-    if ($candidates.Count -eq 0) {
+    if ($null -eq $incrementalDate -and $null -eq $fullDate) {
         return $null
     }
 
-    $latest = $candidates[0]
-    foreach ($date in $candidates) {
-        if ($date -gt $latest) {
-            $latest = $date
-        }
+    return [pscustomobject]@{
+        Incremental = $incrementalDate
+        Full        = $fullDate
     }
-
-    return $latest
 }
 
 function Get-NarvikUniquePath {
@@ -1830,6 +1773,7 @@ function Get-NarvikVCenterData {
 
         $vms = [System.Collections.Generic.List[object]]::new()
         $notesParseWarnings = 0
+        $lastFullChanged = $false
 
         foreach ($vmView in $vmViews) {
             if ($null -eq $vmView.Config) {
@@ -1893,8 +1837,26 @@ function Get-NarvikVCenterData {
                 $notes = [string]$vmView.Config.Annotation
             }
 
-            $lastBackup = ConvertFrom-NarvikVmNotes -Notes $notes
-            if ($null -eq $lastBackup -and -not [string]::IsNullOrWhiteSpace($notes)) {
+            $lastBackup = $null
+            $noteBackups = ConvertFrom-NarvikVmNotes -Notes $notes
+            if ($null -ne $noteBackups) {
+                # The tag for an incremental backup is the authoritative value
+                # for the last incremental; the full tag is authoritative for
+                # the last full only. They never overwrite each other.
+                $lastBackup = $noteBackups.Incremental
+                if ($null -ne $noteBackups.Full) {
+                    $currentLastFull = $null
+                    if ($script:LastFull.ContainsKey($vmName)) {
+                        $currentLastFull = $script:LastFull[$vmName]
+                    }
+                    if ($null -eq $currentLastFull -or $currentLastFull -ne $noteBackups.Full) {
+                        $script:LastFull[$vmName] = $noteBackups.Full
+                        $lastFullChanged = $true
+                        Write-NarvikLog -Level INFO -Message "VM '$vmName' Notes report a full backup at $($noteBackups.Full.ToString('yyyy-MM-dd HH:mm:ss')); last full control updated."
+                    }
+                }
+            }
+            elseif (-not [string]::IsNullOrWhiteSpace($notes)) {
                 $notesParseWarnings++
             }
 
@@ -2037,8 +1999,12 @@ function Get-NarvikVCenterData {
             })
         }
 
+        if ($lastFullChanged) {
+            Save-NarvikLastFull
+        }
+
         if ($notesParseWarnings -gt 0) {
-            Write-NarvikLog -Level WARNING -Message "$notesParseWarnings VM(s) have notes but no parseable backup timestamp; they will be treated as never backed up."
+            Write-NarvikLog -Level WARNING -Message "$notesParseWarnings VM(s) have notes but no valid backup tag; their last incremental backup is unknown."
         }
 
         $sortedVms = @($vms | Sort-Object -Property FolderPath, Name)
@@ -3789,7 +3755,11 @@ function Invoke-NarvikIdleMaintenance {
         if ($null -ne $vm.LastBackup) {
             $lastBackupText = $vm.LastBackup.ToString('yyyy-MM-dd HH:mm:ss')
         }
-        Write-NarvikLog -Level INFO -Message "Eligible VM '$($vm.Name)': folder '$($vm.FolderPath)', host '$($vm.HostName)', cluster '$($vm.ClusterName)' (priority $($vm.ClusterPriority), max_threads $($vm.ClusterMaxThreads)), size $($vm.TotalSizeGB) GB, last backup $lastBackupText."
+        $lastFullText = 'never'
+        if ($script:LastFull.ContainsKey($vm.Name)) {
+            $lastFullText = $script:LastFull[$vm.Name].ToString('yyyy-MM-dd HH:mm:ss')
+        }
+        Write-NarvikLog -Level INFO -Message "Eligible VM '$($vm.Name)': folder '$($vm.FolderPath)', host '$($vm.HostName)', cluster '$($vm.ClusterName)' (priority $($vm.ClusterPriority), max_threads $($vm.ClusterMaxThreads)), size $($vm.TotalSizeGB) GB, last incremental $lastBackupText, last full $lastFullText."
     }
 
     Write-NarvikLog -Level INFO -Message "Non-eligible VMs: $(@($script:NonEligibleVMs).Count)."

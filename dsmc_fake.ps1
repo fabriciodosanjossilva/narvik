@@ -46,8 +46,18 @@
 #       _ERR_       -> line removed; on a duplicate-name failing backup the
 #                      ANS1715E error line is printed here and the script stops
 #   - -vmmc and -preview are accepted and ignored.
+#   - When DSMC_FAKE_RUNTIME_ROOT is set, the fake also updates the VM Notes
+#     in vCenter, the way real dsmc does. On success it removes every
+#     <Backup ...> tag and appends exactly one tag in the fixed format:
+#       <Backup incremental successful in dd/MM/yyyy HH:mm:ss>
+#       <Backup full successful in dd/MM/yyyy HH:mm:ss>
+#     On failure it removes every <Backup ...> tag. Only tags named exactly
+#     'Backup' are removed; other angle-bracket tags such as <Owner> or
+#     <Note>...</Note> and all remaining text are preserved. The update needs
+#     PowerCLI and a reachable vCenter, and only runs when the environment
+#     variable points at a runtime root containing config.json.
 #
-# Environment variables (automated tests only; both default to the values
+# Environment variables (automated tests only; all default to the behaviour
 # documented above):
 #   DSMC_FAKE_PAUSE_SCALE             Integer or decimal divisor for every
 #                                     _PAUSE_N_ pause. 0.01 finishes a backup in
@@ -56,6 +66,10 @@
 #   DSMC_FAKE_RANDOM_FAILURE_PERCENT  Replacement for the 5 percent random
 #                                     failure rate. Set it to 0 for
 #                                     deterministic runs.
+#   DSMC_FAKE_RUNTIME_ROOT            Runtime root containing config.json and
+#                                     the vCenter password file. When set, the
+#                                     fake updates the VM Notes as described
+#                                     above. Unset leaves the Notes untouched.
 #
 # Exit codes (same convention as dsmc):
 #   0  backup succeeded
@@ -111,6 +125,172 @@ if (-not [string]::IsNullOrWhiteSpace($env:DSMC_FAKE_PAUSE_SCALE)) {
     try { $PauseScale = [double]::Parse($env:DSMC_FAKE_PAUSE_SCALE, [System.Globalization.CultureInfo]::InvariantCulture) } catch { $PauseScale = 1.0 }
 }
 if ($PauseScale -le 0) { $PauseScale = 1.0 }
+
+# ---------------------------------------------------------------------------
+# VM Notes support (only when DSMC_FAKE_RUNTIME_ROOT is set).
+# ---------------------------------------------------------------------------
+
+function Resolve-NkFakePath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [string]$BasePath
+    )
+
+    if ([System.IO.Path]::IsPathRooted($Path)) {
+        return $Path
+    }
+
+    return [System.IO.Path]::GetFullPath((Join-Path $BasePath $Path))
+}
+
+function Remove-NkFakeBackupTags {
+    param(
+        [AllowEmptyString()]
+        [string]$Notes
+    )
+
+    return [regex]::Replace($Notes, '(?is)<Backup(?:\s[^>]*)?>', '')
+}
+
+function New-NkFakeBackupTag {
+    param(
+        [Parameter(Mandatory = $true)]
+        [bool]$Full,
+
+        [Parameter(Mandatory = $true)]
+        [datetime]$Timestamp
+    )
+
+    $mode = 'incremental'
+    if ($Full) {
+        $mode = 'full'
+    }
+
+    $stamp = $Timestamp.ToString('dd/MM/yyyy HH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture)
+    return '<Backup ' + $mode + ' successful in ' + $stamp + '>'
+}
+
+function Update-NkFakeVmNotes {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$VmName,
+
+        [Parameter(Mandatory = $true)]
+        [bool]$Success,
+
+        [Parameter(Mandatory = $true)]
+        [bool]$Full
+    )
+
+    $runtimeRoot = [string]$env:DSMC_FAKE_RUNTIME_ROOT
+    if ([string]::IsNullOrWhiteSpace($runtimeRoot)) {
+        return
+    }
+
+    $connection = $null
+
+    try {
+        if (-not [System.IO.Path]::IsPathRooted($runtimeRoot)) {
+            $runtimeRoot = [System.IO.Path]::GetFullPath((Join-Path (Get-Location).Path $runtimeRoot))
+        }
+
+        $configPath = Join-Path $runtimeRoot 'config.json'
+        if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+            throw [System.Exception]::new("Configuration file not found: '$configPath'.")
+        }
+
+        $rawConfig = Get-Content -LiteralPath $configPath -Raw -ErrorAction Stop
+        $config = $rawConfig | ConvertFrom-Json -ErrorAction Stop
+
+        $passwordFile = Resolve-NkFakePath -Path ([string]$config.vcenter_password_file) -BasePath $runtimeRoot
+        if (-not (Test-Path -LiteralPath $passwordFile -PathType Leaf)) {
+            throw [System.Exception]::new("vCenter password file not found: '$passwordFile'.")
+        }
+
+        $password = (Get-Content -LiteralPath $passwordFile -Raw -ErrorAction Stop).TrimEnd([char]13, [char]10)
+        if ([string]::IsNullOrEmpty($password)) {
+            throw [System.Exception]::new("vCenter password file '$passwordFile' is empty.")
+        }
+
+        $secure = ConvertTo-SecureString -String $password -AsPlainText -Force
+        $credential = New-Object System.Management.Automation.PSCredential -ArgumentList ([string]$config.vcenter_user), $secure
+
+        Import-Module 'VMware.VimAutomation.Core' -ErrorAction Stop
+
+        $certificateAction = 'Fail'
+        if ($null -ne $config.vcenter_ignore_certificate -and [bool]$config.vcenter_ignore_certificate) {
+            $certificateAction = 'Ignore'
+        }
+        try {
+            Set-PowerCLIConfiguration -Scope Session -InvalidCertificateAction $certificateAction -Confirm:$false -ErrorAction Stop | Out-Null
+        }
+        catch {
+            Set-PowerCLIConfiguration -InvalidCertificateAction $certificateAction -Confirm:$false -ErrorAction Stop | Out-Null
+        }
+
+        $port = 443
+        if ($null -ne $config.vcenter_port) {
+            $port = [int]$config.vcenter_port
+        }
+
+        $connection = Connect-VIServer -Server ([string]$config.vcenter_server) -Port $port -Credential $credential -ErrorAction Stop -WarningAction SilentlyContinue
+
+        $foundVms = @(Get-VM -Name $VmName -ErrorAction Stop)
+        if ($foundVms.Count -gt 1) {
+            $exactVms = @($foundVms | Where-Object { $_.Name -ceq $VmName })
+            if ($exactVms.Count -eq 1) {
+                $foundVms = $exactVms
+            }
+        }
+        if ($foundVms.Count -ne 1) {
+            throw [System.Exception]::new("Expected exactly one VM named '$VmName', found $($foundVms.Count).")
+        }
+
+        $vm = $foundVms[0]
+        $notes = ''
+        if ($null -ne $vm.Notes) {
+            $notes = [string]$vm.Notes
+        }
+        elseif ($null -ne $vm.ExtensionData -and $null -ne $vm.ExtensionData.Config -and $null -ne $vm.ExtensionData.Config.Annotation) {
+            $notes = [string]$vm.ExtensionData.Config.Annotation
+        }
+
+        $cleanNotes = Remove-NkFakeBackupTags -Notes $notes
+        if ($Success) {
+            $tag = New-NkFakeBackupTag -Full $Full -Timestamp (Get-Date)
+            if ([string]::IsNullOrWhiteSpace($cleanNotes)) {
+                $newNotes = $tag
+            }
+            elseif ($cleanNotes -match '(\r?\n)$') {
+                $newNotes = $cleanNotes + $tag
+            }
+            else {
+                $newNotes = $cleanNotes + "`r`n" + $tag
+            }
+        }
+        else {
+            $newNotes = $cleanNotes
+            if ([string]::IsNullOrWhiteSpace($newNotes)) {
+                $newNotes = ''
+            }
+        }
+
+        if ($newNotes -cne $notes) {
+            Set-VM -VM $vm -Notes $newNotes -Confirm:$false -ErrorAction Stop | Out-Null
+        }
+    }
+    catch {
+        [Console]::Error.WriteLine("dsmc_fake: could not update notes for VM '$VmName': $($_.Exception.Message)")
+    }
+    finally {
+        if ($null -ne $connection) {
+            Disconnect-VIServer -Server $connection -Confirm:$false -ErrorAction SilentlyContinue -WarningAction SilentlyContinue | Out-Null
+        }
+    }
+}
 
 # ---------------------------------------------------------------------------
 # Parse the command line.
@@ -176,6 +356,7 @@ $isDuplicate = (-not $isForcedError) -and ($vmName -like '*_dup*') -and (-not $i
 $isRandomFailure = (-not $isForcedError) -and (-not ($vmName -like '*_dup*')) -and ((Get-Random -Minimum 0 -Maximum 100) -lt $RandomFailurePercent)
 
 if ($isRandomFailure) {
+    Update-NkFakeVmNotes -VmName $vmName -Success $false -Full $isFull
     exit $FailureExitCode
 }
 
@@ -279,10 +460,12 @@ foreach ($line in ($template -split "`r?`n")) {
     if ($line -match '_ERR_') {
         if ($isForcedError) {
             Write-Output ($PlainErrorAnsCode + ' The backup of virtual machine failed.')
+            Update-NkFakeVmNotes -VmName $vmName -Success $false -Full $isFull
             exit $FailureExitCode
         }
         if ($isDuplicate) {
             Write-Output ($ErrorAnsCode + ' The backup of virtual machine failed because a duplicate virtual machine GUID was detected.')
+            Update-NkFakeVmNotes -VmName $vmName -Success $false -Full $isFull
             exit $FailureExitCode
         }
         continue
@@ -304,7 +487,9 @@ foreach ($line in ($template -split "`r?`n")) {
 # above has no _ERR_ marker. (The random silent failure has already exited
 # above.)
 if ($isForcedError -or $isDuplicate) {
+    Update-NkFakeVmNotes -VmName $vmName -Success $false -Full $isFull
     exit $FailureExitCode
 }
 
+Update-NkFakeVmNotes -VmName $vmName -Success $true -Full $isFull
 exit 0
