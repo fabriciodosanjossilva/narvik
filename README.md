@@ -71,10 +71,3 @@ Narvik is a backup automation for "IBM Storage Protect for VMWare" on Windows Se
   runtime root is refused; passwords live in files, not in the config; and
   the daemon ships in preview mode so nothing is actually backed up until
   the operator opts in.
-
-## Tests
-
-`tests/Invoke-NarvikUnitTest.ps1` runs offline against the pure helpers;
-`tests/Invoke-NarvikVcenterTest.ps1` runs Narvik end to end against a vCenter
-with `dsmc_fake.ps1` standing in for `dsmc`. See `tests/README.md` for how to
-run them, the guard rails and the known gaps.
