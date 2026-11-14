@@ -7,9 +7,12 @@ Narvik is a backup automation for "IBM Storage Protect for VMWare" on Windows Se
 - Unattended daemon: runs continuously, no external scheduler needed.
   Stopping is graceful: `stop.txt` lets active backups finish, `abort.txt`
   kills them and exits immediately.
-- Automatic inventory: collects VMs, hosts, datastores, datastore clusters
-  and tags from vCenter, caches the result for an hour and retries a failed
+- Automatic inventory: reads VMs, hosts, datastores, datastore clusters and
+  tags from vCenter, caches the result for an hour and retries a failed
   collection after a minute, so a flaky vCenter never halts backups for long.
+  Tags are always read, so enabling the opt-out rule does not wait for the
+  cache to expire. Narvik only reads from vCenter: it never creates,
+  reconfigures or deletes anything there.
 - Policy by placement: each datastore cluster maps to an IBM Storage
   Protect management class, so the backup policy follows where the VM lives.
 - Incremental backups: backs up any eligible VM whose last backup, read from
@@ -40,8 +43,11 @@ Narvik is a backup automation for "IBM Storage Protect for VMWare" on Windows Se
   backed up but trigger an email alert, since snapshots may not capture them
   consistently.
 - Opt-out by tag: a configurable vSphere tag (such as
-  `NAO_FAZER_BACKUP_POR_SNAPSHOT`) on a VM, datastore or datastore cluster
-  removes it from backups.
+  `NAO_FAZER_BACKUP_POR_SNAPSHOT`) removes a VM from backups when it is on the
+  VM itself, its cluster, its resource pool, its own VM folder or any datastore
+  or datastore cluster backing its disks; a tag on an ancestor folder does not
+  apply. If the rule is configured and the tag assignments cannot be read, no
+  VM is backed up rather than risk one the operator asked to skip.
 - VMware Live Site Recovery placeholder VMs are skipped silently.
 - Email alerts: duplicate names, inventory rule violations, disk sizes not
   aligned to 1 MiB, independent disks and fatal errors are mailed through
@@ -55,3 +61,10 @@ Narvik is a backup automation for "IBM Storage Protect for VMWare" on Windows Se
   runtime root is refused; passwords live in files, not in the config; and
   the daemon ships in preview mode so nothing is actually backed up until
   the operator opts in.
+
+## Tests
+
+`tests/Invoke-NarvikUnitTest.ps1` runs offline against the pure helpers;
+`tests/Invoke-NarvikVcenterTest.ps1` runs Narvik end to end against a vCenter
+with `dsmc_fake.ps1` standing in for `dsmc`. See `tests/README.md` for how to
+run them, the guard rails and the known gaps.

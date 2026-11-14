@@ -47,6 +47,16 @@
 #                      ANS1715E error line is printed here and the script stops
 #   - -vmmc and -preview are accepted and ignored.
 #
+# Environment variables (automated tests only; both default to the values
+# documented above):
+#   DSMC_FAKE_PAUSE_SCALE             Integer or decimal divisor for every
+#                                     _PAUSE_N_ pause. 0.01 finishes a backup in
+#                                     about half a second; unset or 1 keeps the
+#                                     real timing.
+#   DSMC_FAKE_RANDOM_FAILURE_PERCENT  Replacement for the 5 percent random
+#                                     failure rate. Set it to 0 for
+#                                     deterministic runs.
+#
 # Exit codes (same convention as dsmc):
 #   0  backup succeeded
 #   8  backup failed
@@ -84,7 +94,23 @@ $UsageExitCode = 12
 
 # Chance, in percent, that a backup of a VM whose name contains neither
 # "_err" nor "_dup" fails silently (no output, no error code, just exits).
+# DSMC_FAKE_RANDOM_FAILURE_PERCENT overrides it so automated tests can remove
+# the randomness; the default keeps the documented behaviour.
 $RandomFailurePercent = 5
+if (-not [string]::IsNullOrWhiteSpace($env:DSMC_FAKE_RANDOM_FAILURE_PERCENT)) {
+    try { $RandomFailurePercent = [int]$env:DSMC_FAKE_RANDOM_FAILURE_PERCENT } catch { $RandomFailurePercent = 5 }
+}
+if ($RandomFailurePercent -lt 0) { $RandomFailurePercent = 0 }
+if ($RandomFailurePercent -gt 100) { $RandomFailurePercent = 100 }
+
+# Every _PAUSE_<seconds>_ line pauses for that many seconds, which makes a
+# successful backup take about 47 seconds. DSMC_FAKE_PAUSE_SCALE divides those
+# pauses so automated tests can run quickly; 1 keeps the documented timing.
+$PauseScale = 1.0
+if (-not [string]::IsNullOrWhiteSpace($env:DSMC_FAKE_PAUSE_SCALE)) {
+    try { $PauseScale = [double]::Parse($env:DSMC_FAKE_PAUSE_SCALE, [System.Globalization.CultureInfo]::InvariantCulture) } catch { $PauseScale = 1.0 }
+}
+if ($PauseScale -le 0) { $PauseScale = 1.0 }
 
 # ---------------------------------------------------------------------------
 # Parse the command line.
@@ -237,9 +263,12 @@ _TS_ Total number of virtual machines processed: 1
 
 foreach ($line in ($template -split "`r?`n")) {
     # A "_PAUSE_<seconds>_" line is removed and replaced by a pause of that
-    # many seconds.
+    # many seconds (scaled by DSMC_FAKE_PAUSE_SCALE).
     if ($line -match '_PAUSE_([0-9]+)_') {
-        Start-Sleep -Seconds ([int]$Matches[1])
+        $pauseMilliseconds = [int][math]::Round([double]$Matches[1] * $PauseScale * 1000.0)
+        if ($pauseMilliseconds -gt 0) {
+            Start-Sleep -Milliseconds $pauseMilliseconds
+        }
         continue
     }
 

@@ -1455,6 +1455,24 @@ function Disconnect-NarvikVCenter {
     }
 }
 
+function Get-NarvikMoRefTags {
+    param(
+        [AllowEmptyString()]
+        [string]$MoRefValue,
+        [hashtable]$TagMap
+    )
+
+    if ([string]::IsNullOrWhiteSpace($MoRefValue) -or $null -eq $TagMap) {
+        return @()
+    }
+
+    if ($TagMap.ContainsKey($MoRefValue)) {
+        return @($TagMap[$MoRefValue])
+    }
+
+    return @()
+}
+
 function Get-NarvikViewTags {
     param(
         $View,
@@ -1465,12 +1483,7 @@ function Get-NarvikViewTags {
         return @()
     }
 
-    $entityId = [string]$View.MoRef.Value
-    if (-not [string]::IsNullOrWhiteSpace($entityId) -and $TagMap.ContainsKey($entityId)) {
-        return @($TagMap[$entityId])
-    }
-
-    return @()
+    return @(Get-NarvikMoRefTags -MoRefValue ([string]$View.MoRef.Value) -TagMap $TagMap)
 }
 
 function Get-NarvikFolderPath {
@@ -1537,15 +1550,21 @@ function Get-NarvikVCenterData {
     try {
         $connection = Connect-NarvikVCenter
 
-        $vmViews = @(Get-View -ViewType VirtualMachine -Property Name, Config, Runtime.Host, Parent -ErrorAction Stop | Where-Object { $null -ne $_ })
+        $vmViews = @(Get-View -ViewType VirtualMachine -Property Name, Config, Runtime.Host, Parent, ResourcePool -ErrorAction Stop | Where-Object { $null -ne $_ })
         $dsViews = @(Get-View -ViewType Datastore -Property Name -ErrorAction Stop | Where-Object { $null -ne $_ })
         $podViews = @(Get-View -ViewType StoragePod -Property Name, ChildEntity -ErrorAction Stop | Where-Object { $null -ne $_ })
         $folderViews = @(Get-View -ViewType Folder -Property Name, Parent -ErrorAction Stop | Where-Object { $null -ne $_ })
-        $hostViews = @(Get-View -ViewType HostSystem -Property Name -ErrorAction Stop | Where-Object { $null -ne $_ })
+        $hostViews = @(Get-View -ViewType HostSystem -Property Name, Parent -ErrorAction Stop | Where-Object { $null -ne $_ })
+        $rpViews = @(Get-View -ViewType ResourcePool -Property Name -ErrorAction Stop | Where-Object { $null -ne $_ })
 
-        # Tag assignments are only needed by the snapshot tag rule. If the
-        # tagging API is unavailable (for example on the simulator), keep
-        # collecting inventory unless that rule actually requires tags.
+        # Tag assignments are a separate vAPI call, and the snapshot tag rule
+        # reads them for the inventory it caches, so they are always collected:
+        # enabling the rule later must not have to wait for the cache to expire.
+        # A failure is tolerated only while the rule is unused, because then no
+        # backup decision depends on tags. With the rule configured the
+        # collection aborts, so a cached inventory without tags can never be
+        # mistaken for an inventory of untagged VMs.
+        $tagDataAvailable = $true
         $tagAssignments = @()
         try {
             $tagAssignments = @(Get-TagAssignment -ErrorAction Stop | Where-Object { $null -ne $_ })
@@ -1554,17 +1573,56 @@ function Get-NarvikVCenterData {
             if (-not [string]::IsNullOrWhiteSpace([string]$script:Config.dont_backup_by_snapshot_tag_name)) {
                 throw
             }
+            $tagDataAvailable = $false
             Write-NarvikLog -Level WARNING -Message "vCenter tag assignments are unavailable; continuing without tags: $($_.Exception.Message)"
         }
 
         $folderMap = @{}
         foreach ($folder in $folderViews) {
+            # StoragePod derives from Folder, so datastore clusters also show up
+            # in a Folder view. They are not VM folders and cannot be a VM's
+            # parent, so keep the map limited to real folders.
+            if ($folder.GetType().Name -eq 'StoragePod') {
+                continue
+            }
             $folderMap[[string]$folder.MoRef.Value] = $folder
         }
 
         $hostMap = @{}
+        $hostParentMap = @{}
         foreach ($hostView in $hostViews) {
-            $hostMap[[string]$hostView.MoRef.Value] = [string]$hostView.Name
+            $hostId = [string]$hostView.MoRef.Value
+            $hostMap[$hostId] = [string]$hostView.Name
+            if ($null -ne $hostView.Parent) {
+                $hostParentMap[$hostId] = $hostView.Parent
+            }
+        }
+
+        $resourcePoolMap = @{}
+        foreach ($resourcePool in $rpViews) {
+            $resourcePoolMap[[string]$resourcePool.MoRef.Value] = [string]$resourcePool.Name
+        }
+
+        # A host's parent is a ClusterComputeResource only when the host is in a
+        # real cluster; standalone hosts sit under a ComputeResource, where the
+        # cluster tag rule never applies. Only the cluster names of hosts that
+        # actually have one are fetched.
+        $clusterNames = @{}
+        $clusterIds = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($hostId in @($hostParentMap.Keys)) {
+            $hostParent = $hostParentMap[$hostId]
+            if ($null -ne $hostParent -and [string]$hostParent.Type -eq 'ClusterComputeResource') {
+                $clusterId = [string]$hostParent.Value
+                if (-not $clusterIds.Contains($clusterId)) {
+                    [void]$clusterIds.Add($clusterId)
+                }
+            }
+        }
+
+        if ($clusterIds.Count -gt 0) {
+            foreach ($clusterView in @(Get-View -Id @($clusterIds) -Property Name -ErrorAction Stop | Where-Object { $null -ne $_ })) {
+                $clusterNames[[string]$clusterView.MoRef.Value] = [string]$clusterView.Name
+            }
         }
 
         $datastoreMap = @{}
@@ -1689,11 +1747,39 @@ function Get-NarvikVCenterData {
                 $folderId = [string]$vmView.Parent.Value
             }
 
+            $folderName = ''
+            if (-not [string]::IsNullOrWhiteSpace($folderId) -and $folderMap.ContainsKey($folderId)) {
+                $folderName = [string]$folderMap[$folderId].Name
+            }
+
+            $resourcePoolId = ''
+            if ($null -ne $vmView.ResourcePool) {
+                $resourcePoolId = [string]$vmView.ResourcePool.Value
+            }
+
+            $resourcePoolName = ''
+            if (-not [string]::IsNullOrWhiteSpace($resourcePoolId) -and $resourcePoolMap.ContainsKey($resourcePoolId)) {
+                $resourcePoolName = $resourcePoolMap[$resourcePoolId]
+            }
+
+            $hostId = ''
             $hostName = ''
             if ($null -ne $vmView.Runtime -and $null -ne $vmView.Runtime.Host) {
                 $hostId = [string]$vmView.Runtime.Host.Value
                 if ($hostMap.ContainsKey($hostId)) {
                     $hostName = [string]$hostMap[$hostId]
+                }
+            }
+
+            $hostClusterId = ''
+            $hostClusterName = ''
+            if (-not [string]::IsNullOrWhiteSpace($hostId) -and $hostParentMap.ContainsKey($hostId)) {
+                $hostParent = $hostParentMap[$hostId]
+                if ($null -ne $hostParent -and [string]$hostParent.Type -eq 'ClusterComputeResource') {
+                    $hostClusterId = [string]$hostParent.Value
+                    if ($clusterNames.ContainsKey($hostClusterId)) {
+                        $hostClusterName = [string]$clusterNames[$hostClusterId]
+                    }
                 }
             }
 
@@ -1749,8 +1835,10 @@ function Get-NarvikVCenterData {
                     }
 
                     $clusterName = ''
+                    $datastoreClusterId = ''
                     if (-not [string]::IsNullOrWhiteSpace($datastoreId) -and $podByDatastore.ContainsKey($datastoreId)) {
                         $clusterName = [string]$podByDatastore[$datastoreId].Name
+                        $datastoreClusterId = [string]$podByDatastore[$datastoreId].MoRef.Value
                     }
 
                     $label = ''
@@ -1780,16 +1868,18 @@ function Get-NarvikVCenterData {
                     }
 
                     [void]$disks.Add([pscustomobject]@{
-                        Label            = $label
-                        Type             = $diskType
-                        Independent      = [bool]$isIndependent
-                        RDM              = [bool]$isRdm
-                        SizeGB           = [double]$sizeGb
-                        CapacityInKB     = [long]$capacityKb
-                        Datastore        = $datastoreName
-                        DatastoreCluster = $clusterName
-                        DiskMode         = $diskMode
-                        BackingType      = $backingType
+                        Label                = $label
+                        Type                 = $diskType
+                        Independent          = [bool]$isIndependent
+                        RDM                  = [bool]$isRdm
+                        SizeGB               = [double]$sizeGb
+                        CapacityInKB         = [long]$capacityKb
+                        Datastore            = $datastoreName
+                        DatastoreCluster     = $clusterName
+                        DatastoreTags        = @(Get-NarvikMoRefTags -MoRefValue $datastoreId -TagMap $tagMap)
+                        DatastoreClusterTags = @(Get-NarvikMoRefTags -MoRefValue $datastoreClusterId -TagMap $tagMap)
+                        DiskMode             = $diskMode
+                        BackingType          = $backingType
                     })
                 }
             }
@@ -1818,6 +1908,15 @@ function Get-NarvikVCenterData {
                 Name              = $vmName
                 MoRef             = [string]$vmView.MoRef.Value
                 FolderPath        = Get-NarvikFolderPath -FolderId $folderId -FolderMap $folderMap
+                FolderMoRef       = $folderId
+                FolderName        = $folderName
+                FolderTags        = @(Get-NarvikMoRefTags -MoRefValue $folderId -TagMap $tagMap)
+                ClusterMoRef      = $hostClusterId
+                ClusterName       = $hostClusterName
+                ClusterTags       = @(Get-NarvikMoRefTags -MoRefValue $hostClusterId -TagMap $tagMap)
+                ResourcePoolMoRef = $resourcePoolId
+                ResourcePoolName  = $resourcePoolName
+                ResourcePoolTags  = @(Get-NarvikMoRefTags -MoRefValue $resourcePoolId -TagMap $tagMap)
                 HostName          = $hostName
                 Tags              = @(Get-NarvikViewTags -View $vmView -TagMap $tagMap)
                 Notes             = $notes
@@ -1840,6 +1939,7 @@ function Get-NarvikVCenterData {
             VMs                  = $sortedVms
             Datastores           = @($datastores)
             DatastoreClusters    = @($datastoreClusters)
+            TagDataAvailable     = [bool]$tagDataAvailable
             VmCount              = $sortedVms.Count
             DatastoreCount       = $datastores.Count
             DatastoreClusterCount = $datastoreClusters.Count
@@ -1925,6 +2025,61 @@ function Test-NarvikTagPresent {
     return $false
 }
 
+function Get-NarvikVmTagViolations {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Vm,
+        [AllowEmptyString()]
+        [string]$TagName
+    )
+
+    if ([string]::IsNullOrWhiteSpace($TagName)) {
+        return @()
+    }
+
+    # Entities whose tag opts a VM out of snapshot backups. The datastore scope
+    # is the datastores that back the VM's disks, and the folder scope is the
+    # VM's direct folder only: a tag on an ancestor folder does not apply.
+    $scopes = New-Object 'System.Collections.Generic.List[object]'
+    [void]$scopes.Add([pscustomobject]@{ Label = 'VM'; Name = ''; Tags = @($Vm.Tags) })
+    [void]$scopes.Add([pscustomobject]@{ Label = 'Cluster'; Name = [string]$Vm.ClusterName; Tags = @($Vm.ClusterTags) })
+    [void]$scopes.Add([pscustomobject]@{ Label = 'Resource pool'; Name = [string]$Vm.ResourcePoolName; Tags = @($Vm.ResourcePoolTags) })
+    [void]$scopes.Add([pscustomobject]@{ Label = 'Folder'; Name = [string]$Vm.FolderName; Tags = @($Vm.FolderTags) })
+
+    foreach ($disk in @($Vm.Disks)) {
+        if ($null -eq $disk) {
+            continue
+        }
+
+        [void]$scopes.Add([pscustomobject]@{ Label = 'Datastore'; Name = [string]$disk.Datastore; Tags = @($disk.DatastoreTags) })
+        [void]$scopes.Add([pscustomobject]@{ Label = 'Datastore cluster'; Name = [string]$disk.DatastoreCluster; Tags = @($disk.DatastoreClusterTags) })
+    }
+
+    $violations = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($scope in $scopes) {
+        if (-not (Test-NarvikTagPresent -Tags @($scope.Tags) -TagName $TagName)) {
+            continue
+        }
+
+        $name = [string]$scope.Name
+        if ($scope.Label -eq 'VM') {
+            $reason = "VM tag '$TagName'"
+        }
+        elseif ([string]::IsNullOrWhiteSpace($name)) {
+            $reason = "$($scope.Label) tag '$TagName'"
+        }
+        else {
+            $reason = "$($scope.Label) '$name' tag '$TagName'"
+        }
+
+        if (-not $violations.Contains($reason)) {
+            [void]$violations.Add($reason)
+        }
+    }
+
+    return @($violations)
+}
+
 function Format-NarvikDiskSizeMiB {
     param(
         [Parameter(Mandatory = $true)]
@@ -1990,16 +2145,6 @@ function Update-NarvikEligibility {
         return
     }
 
-    $datastoreByName = @{}
-    foreach ($datastore in @($script:VCache.Datastores)) {
-        $datastoreByName[[string]$datastore.Name] = $datastore
-    }
-
-    $clusterByName = @{}
-    foreach ($cluster in @($script:VCache.DatastoreClusters)) {
-        $clusterByName[[string]$cluster.Name] = $cluster
-    }
-
     $initialEligible = [System.Collections.Generic.List[object]]::new()
     $nonEligible = [System.Collections.Generic.List[object]]::new()
     $unsupportedNameCases = [System.Collections.Generic.List[object]]::new()
@@ -2007,8 +2152,17 @@ function Update-NarvikEligibility {
     $managementClassCases = [System.Collections.Generic.List[object]]::new()
     $diskSizeCases = [System.Collections.Generic.List[object]]::new()
 
+    # With the snapshot tag rule configured, an inventory collected without tag
+    # data cannot prove that a VM is untagged. Skipping the backup is the only
+    # safe choice: silently ignoring the operator's exclusion is not an option.
+    $tagDataUnavailable = (-not [string]::IsNullOrWhiteSpace($snapshotTagName)) -and (-not [bool]$script:VCache.TagDataAvailable)
+
     foreach ($vm in @($script:VCache.VMs)) {
         $reasons = New-Object 'System.Collections.Generic.List[string]'
+
+        if ($tagDataUnavailable) {
+            Add-NarvikReason -Reasons $reasons -Reason 'Tag assignments are unavailable while the snapshot tag rule is configured'
+        }
 
         if ([string]$vm.Name -match $unsupportedNamePattern) {
             Add-NarvikReason -Reasons $reasons -Reason 'VM name contains characters not supported by the backup command'
@@ -2082,8 +2236,8 @@ function Update-NarvikEligibility {
             })
         }
 
-        if (-not [string]::IsNullOrWhiteSpace($snapshotTagName) -and (Test-NarvikTagPresent -Tags $vm.Tags -TagName $snapshotTagName)) {
-            Add-NarvikReason -Reasons $reasons -Reason "VM tag '$snapshotTagName'"
+        foreach ($violation in @(Get-NarvikVmTagViolations -Vm $vm -TagName $snapshotTagName)) {
+            Add-NarvikReason -Reasons $reasons -Reason $violation
         }
 
         foreach ($disk in @($vm.Disks)) {
@@ -2093,27 +2247,12 @@ function Update-NarvikEligibility {
                 continue
             }
 
-            if ($datastoreByName.ContainsKey($datastoreName)) {
-                $datastore = $datastoreByName[$datastoreName]
-                if (-not [string]::IsNullOrWhiteSpace($snapshotTagName) -and (Test-NarvikTagPresent -Tags $datastore.Tags -TagName $snapshotTagName)) {
-                    Add-NarvikReason -Reasons $reasons -Reason "Datastore '$datastoreName' tag '$snapshotTagName'"
-                }
-            }
-
             # A disk on a datastore that belongs to no datastore cluster breaks
             # the placement rule even when the other disks sit in one cluster.
             if ([string]::IsNullOrWhiteSpace([string]$disk.DatastoreCluster)) {
                 Add-NarvikReason -Reasons $reasons -Reason "Disk '$($disk.Label)' is on datastore '$datastoreName' which is not in any datastore cluster"
                 if (-not $standaloneDatastores.Contains($datastoreName)) {
                     [void]$standaloneDatastores.Add($datastoreName)
-                }
-            }
-
-            $clusterName = [string]$disk.DatastoreCluster
-            if (-not [string]::IsNullOrWhiteSpace($clusterName) -and $clusterByName.ContainsKey($clusterName)) {
-                $cluster = $clusterByName[$clusterName]
-                if (-not [string]::IsNullOrWhiteSpace($snapshotTagName) -and (Test-NarvikTagPresent -Tags $cluster.Tags -TagName $snapshotTagName)) {
-                    Add-NarvikReason -Reasons $reasons -Reason "Datastore cluster '$clusterName' tag '$snapshotTagName'"
                 }
             }
         }
