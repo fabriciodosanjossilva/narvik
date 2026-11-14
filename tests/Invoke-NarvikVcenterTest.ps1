@@ -2392,7 +2392,8 @@ function Invoke-NkPhaseFixtures {
         }
     }
     else {
-        Add-NkResult -Status SKIP -Name 'FIX-07 created the datastore cluster tag fixture' -Detail 'no tagged datastore cluster with free space exists'
+        $debugPods = @($script:Pods | ForEach-Object { "{0} ({1} datastore(s))" -f $_.Name, @($_.DatastoreIds).Count }) -join ', '
+        Add-NkResult -Status SKIP -Name 'FIX-07 created the datastore cluster tag fixture' -Detail ("no tagged datastore cluster with free space exists; tagged: [{0}]; pods: [{1}]" -f (@($taggedPodNames) -join ', '), $debugPods)
     }
 
     $taggedFolders = @(Get-NkTaggedEntityNames -Type Folder)
