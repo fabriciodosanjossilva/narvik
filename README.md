@@ -23,6 +23,9 @@ Narvik is a backup automation for "IBM Storage Protect for VMWare" on Windows Se
   recorded after a successful full backup, is more than 30 days old, only
   during the off-hours window (weekends or before 08:00) and always oldest
   first; incrementals take priority over fulls.
+- dsmc options: `dsmc_opt_file` adds `-optfile=<file>` to the backup command
+  and `dsmc_asnodename` adds `-asnodename=<name>`. Both are optional and are
+  omitted from the command line when not configured.
 - Concurrency control: caps simultaneous `dsmc` processes
   (`max_backup_threads`) and never starts two backups on the same ESXi host
   at the same time.

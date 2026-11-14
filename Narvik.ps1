@@ -481,6 +481,8 @@ function Import-NarvikConfig {
         'check_administrator_privilege',
         'bypass_security',
         'dsmc_path',
+        'dsmc_opt_file',
+        'dsmc_asnodename',
         'dsmc_use_preview',
         'vcenter_server',
         'vcenter_port',
@@ -521,6 +523,17 @@ function Import-NarvikConfig {
     if (-not (Test-Path -LiteralPath $dsmcPath -PathType Leaf)) {
         throw [System.Exception]::new("dsmc executable not found: '$dsmcPath'.")
     }
+
+    $dsmcOptFile = $null
+    $dsmcOptFileValue = [string](Get-NarvikConfigValue -Config $config -Key 'dsmc_opt_file' -Default '')
+    if (-not [string]::IsNullOrWhiteSpace($dsmcOptFileValue)) {
+        $dsmcOptFile = Resolve-NarvikPath -Path $dsmcOptFileValue -BasePath $script:RootPath
+        if (-not (Test-Path -LiteralPath $dsmcOptFile -PathType Leaf)) {
+            throw [System.Exception]::new("dsmc option file not found: '$dsmcOptFile'.")
+        }
+    }
+
+    $dsmcAsnodename = [string](Get-NarvikConfigValue -Config $config -Key 'dsmc_asnodename' -Default '')
 
     $checkAdministratorPrivilege = ConvertTo-NarvikBoolean -Value (Get-NarvikConfigValue -Config $config -Key 'check_administrator_privilege' -Default $false) -KeyName 'check_administrator_privilege'
 
@@ -736,6 +749,8 @@ function Import-NarvikConfig {
         check_administrator_privilege         = $checkAdministratorPrivilege
         bypass_security                       = $bypassSecurity
         dsmc_path                             = $dsmcPath
+        dsmc_opt_file                         = $dsmcOptFile
+        dsmc_asnodename                       = $dsmcAsnodename
         dsmc_use_preview                      = $dsmcUsePreview
         vcenter_server                        = $vcenterServer
         vcenter_port                          = $vcenterPort
@@ -1478,7 +1493,7 @@ function Initialize-Narvik {
     Write-NarvikLog -Level INFO -Message "Process ID: $PID."
     Write-NarvikLog -Level INFO -Message "Debug logging: $($script:Config.debug)."
     Write-NarvikLog -Level INFO -Message "vCenter: '$($script:Config.vcenter_server):$($script:Config.vcenter_port)' as '$($script:Config.vcenter_user)'."
-    Write-NarvikLog -Level INFO -Message "dsmc: '$($script:Config.dsmc_path)'; preview mode: $($script:Config.dsmc_use_preview)."
+    Write-NarvikLog -Level INFO -Message "dsmc: '$($script:Config.dsmc_path)'; optfile: '$($script:Config.dsmc_opt_file)'; asnodename: '$($script:Config.dsmc_asnodename)'; preview mode: $($script:Config.dsmc_use_preview)."
     Write-NarvikLog -Level INFO -Message "Maximum concurrent backups: $($script:Config.max_backup_threads)."
 
     if ($script:Config.vcenter_ignore_certificate) {
@@ -3563,6 +3578,14 @@ function Start-NarvikBackupJob {
 
     if ($script:Config.dsmc_use_preview) {
         [void]$arguments.Add('-preview')
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($script:Config.dsmc_opt_file)) {
+        [void]$arguments.Add('-optfile=' + (Quote-NarvikWindowsArgument -Argument $script:Config.dsmc_opt_file))
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($script:Config.dsmc_asnodename)) {
+        [void]$arguments.Add('-asnodename=' + (Quote-NarvikWindowsArgument -Argument $script:Config.dsmc_asnodename))
     }
 
     $argumentString = $arguments -join ' '

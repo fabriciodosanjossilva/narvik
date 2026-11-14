@@ -3,6 +3,8 @@
   "check_administrator_privilege": false,
   "bypass_security": false,
   "dsmc_path": "C:\\Program Files\\Tivoli\\TSM\\baclient\\dsmc.exe",
+  "dsmc_opt_file": "",
+  "dsmc_asnodename": "",
   "dsmc_use_preview": true,
   "vcenter_server": "vcenter.example.local",
   "vcenter_port": 443,
