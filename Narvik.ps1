@@ -1168,8 +1168,28 @@ function Initialize-NarvikLog {
     }
 
     $script:LogFilePath = $logFile
-    $script:LogWriter = [System.IO.File]::CreateText($logFile)
-    $script:LogWriter.AutoFlush = $true
+    try {
+        $script:LogWriter = [System.IO.File]::CreateText($logFile)
+        $script:LogWriter.AutoFlush = $true
+
+        # Confirm the log file is really writable before stdout is turned off.
+        $probeLine = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + ' [INFO] Log file opened.'
+        $script:LogWriter.WriteLine($probeLine)
+        $script:LogWriter.Flush()
+    }
+    catch {
+        $writeError = $_.Exception.Message
+        try {
+            if ($null -ne $script:LogWriter) {
+                $script:LogWriter.Close()
+            }
+        }
+        catch {
+        }
+        $script:LogWriter = $null
+        throw [System.Exception]::new("Failed to write log file '$logFile': $writeError")
+    }
+
     $script:LogToStdout = $false
 }
 
