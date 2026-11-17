@@ -2535,13 +2535,28 @@ function Get-NarvikVmTagViolations {
     return @($violations)
 }
 
-function Format-NarvikDiskSizeMiB {
+function Get-NarvikDiskRoundedCapacityKB {
     param(
         [Parameter(Mandatory = $true)]
         [long]$CapacityInKB
     )
 
-    return ([double]$CapacityInKB / 1024.0).ToString('0.##########', [System.Globalization.CultureInfo]::InvariantCulture)
+    # Next multiple of 1 MiB (1024 KiB) above the current size.
+    return ($CapacityInKB - ($CapacityInKB % 1024) + 1024)
+}
+
+function Get-NarvikDiskFixCommand {
+    param(
+        [string]$VMName,
+        [string]$DiskName,
+        [long]$CapacityInKB
+    )
+
+    # Double single quotes so the generated command stays valid PowerShell.
+    $vmArgument = ([string]$VMName) -replace "'", "''"
+    $diskArgument = ([string]$DiskName) -replace "'", "''"
+
+    return "Get-HardDisk -vm '$vmArgument' | where {`$_.name -eq '$diskArgument'} | Set-HardDisk -capacityKB $CapacityInKB"
 }
 
 function Add-NarvikReason {
@@ -2741,8 +2756,9 @@ function Update-NarvikEligibility {
             }
 
             if (($capacityKb % 1024) -ne 0) {
-                $sizeMiBText = Format-NarvikDiskSizeMiB -CapacityInKB $capacityKb
-                Add-NarvikReason -Reasons $reasons -Reason "Disk '$($disk.Label)' size $sizeMiBText MiB is not a multiple of 1 MiB"
+                $roundedKb = Get-NarvikDiskRoundedCapacityKB -CapacityInKB $capacityKb
+                Add-NarvikReason -Reasons $reasons -Reason "Disk '$($disk.Label)' size $capacityKb KiB is not a multiple of 1 MiB; corrected size is $roundedKb KiB"
+                Add-NarvikReason -Reasons $reasons -Reason "To fix, run manually: $(Get-NarvikDiskFixCommand -VMName $vm.Name -DiskName $disk.Label -CapacityInKB $roundedKb)"
                 [void]$invalidSizeDisks.Add($disk)
             }
         }
@@ -3154,8 +3170,9 @@ function Send-NarvikDiskSizeAlerts {
             if ($disk.PSObject.Properties.Name -contains 'CapacityInKB') {
                 $capacityKb = [long]$disk.CapacityInKB
             }
-            $sizeMiBText = Format-NarvikDiskSizeMiB -CapacityInKB $capacityKb
-            [void]$body.AppendLine("  - Disk: '$($disk.Label)' | Size: $sizeMiBText MiB")
+            $roundedKb = Get-NarvikDiskRoundedCapacityKB -CapacityInKB $capacityKb
+            [void]$body.AppendLine("  - Disk: '$($disk.Label)' | Size: $capacityKb KiB | Corrected size: $roundedKb KiB")
+            [void]$body.AppendLine("    To fix, run manually: $(Get-NarvikDiskFixCommand -VMName $vm.Name -DiskName $disk.Label -CapacityInKB $roundedKb)")
         }
         [void]$body.AppendLine('')
     }
