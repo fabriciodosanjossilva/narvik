@@ -82,6 +82,10 @@ $script:Initialized = $false
 $script:ExitCode = 0
 $script:NonEligibleSignature = ''
 $script:LastConfigError = ''
+# Set when tag collection aborted the inventory because the snapshot tag rule is
+# configured; the cache refresh consumes it and discards cached tag data.
+$script:TagRuleFailure = $false
+$script:LastTagRuleErrorLogged = [datetime]::MinValue
 
 function Write-NarvikLog {
     param(
@@ -1627,6 +1631,63 @@ function Get-NarvikFolderPath {
     return ($parts -join '/')
 }
 
+function Get-NarvikSnapshotTagRuleName {
+    if ($null -eq $script:Config) {
+        return ''
+    }
+
+    return ([string]$script:Config.dont_backup_by_snapshot_tag_name).Trim()
+}
+
+function Write-NarvikTagRuleError {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Message
+    )
+
+    # The collection is retried about once a minute while the rule stays broken,
+    # so the error is repeated at most once an hour and kept at DEBUG otherwise.
+    $now = Get-Date
+    if ($script:LastTagRuleErrorLogged -ne [datetime]::MinValue -and ($now - $script:LastTagRuleErrorLogged).TotalHours -lt 1.0) {
+        Write-NarvikLog -Level DEBUG -Message $Message
+        return
+    }
+
+    $script:LastTagRuleErrorLogged = $now
+    Write-NarvikLog -Level ERROR -Message $Message
+}
+
+function Test-NarvikVCacheTagRuleCurrent {
+    param(
+        $Cache
+    )
+
+    if ($null -eq $Cache) {
+        return $false
+    }
+
+    $tagRuleName = Get-NarvikSnapshotTagRuleName
+
+    $cachedRuleName = ''
+    if ($null -ne $Cache.PSObject.Properties['TagRuleName']) {
+        $cachedRuleName = [string]$Cache.TagRuleName
+    }
+
+    # Enabling, changing or clearing the rule makes the cache stale: with the
+    # rule configured a cache collected with another tag (or with no tag data,
+    # as older caches are) cannot say whether that tag is present, and clearing
+    # the rule has to release an inventory whose tag data was discarded.
+    if ($cachedRuleName -ne $tagRuleName) {
+        return $false
+    }
+
+    if ([string]::IsNullOrWhiteSpace($tagRuleName)) {
+        return $true
+    }
+
+    return [bool]$Cache.TagDataAvailable
+}
+
 function Test-NarvikSiteRecoveryPlaceholder {
     param(
         $View
@@ -1665,25 +1726,53 @@ function Get-NarvikVCenterData {
         $hostViews = @(Get-View -ViewType HostSystem -Property Name, Parent -ErrorAction Stop | Where-Object { $null -ne $_ })
         $rpViews = @(Get-View -ViewType ResourcePool -Property Name -ErrorAction Stop | Where-Object { $null -ne $_ })
 
-        # Tag assignments are a separate vAPI call, and the snapshot tag rule
-        # reads them for the inventory it caches, so they are always collected:
-        # enabling the rule later must not have to wait for the cache to expire.
-        # A failure is tolerated only while the rule is unused, because then no
-        # backup decision depends on tags. With the rule configured the
-        # collection aborts, so a cached inventory without tags can never be
-        # mistaken for an inventory of untagged VMs.
+        # Tag assignments are read only for the tag named by the snapshot tag
+        # rule, and only while that rule is configured: the session needs read
+        # on that one tag instead of on the whole tag catalog. With the rule
+        # configured any failure aborts the collection, so a cached inventory
+        # without tags can never be mistaken for an inventory of untagged VMs.
+        $tagRuleName = Get-NarvikSnapshotTagRuleName
         $tagDataAvailable = $true
         $tagAssignments = @()
-        try {
-            $tagAssignments = @(Get-TagAssignment -ErrorAction Stop | Where-Object { $null -ne $_ })
-            Write-NarvikLog -Level DEBUG -Message "Collected $($tagAssignments.Count) vCenter tag assignment(s)."
+        if ([string]::IsNullOrWhiteSpace($tagRuleName)) {
+            Write-NarvikLog -Level DEBUG -Message 'Snapshot tag rule is not configured; vCenter tag assignments were not collected.'
         }
-        catch {
-            if (-not [string]::IsNullOrWhiteSpace([string]$script:Config.dont_backup_by_snapshot_tag_name)) {
-                throw
+        else {
+            $tagViews = @()
+            $tagLookupErrors = @()
+            try {
+                $tagViews = @(Get-Tag -Name $tagRuleName -ErrorAction SilentlyContinue -ErrorVariable tagLookupErrors | Where-Object { $null -ne $_ })
             }
-            $tagDataAvailable = $false
-            Write-NarvikLog -Level WARNING -Message "vCenter tag assignments are unavailable; continuing without tags: $($_.Exception.Message)"
+            catch {
+                $script:TagRuleFailure = $true
+                $message = "vCenter tag '$tagRuleName' could not be read while the snapshot tag rule is configured; backups are blocked: $($_.Exception.Message)"
+                Write-NarvikTagRuleError -Message $message
+                throw [System.Exception]::new($message)
+            }
+
+            if ($tagViews.Count -eq 0) {
+                $detail = ''
+                if (@($tagLookupErrors).Count -gt 0) {
+                    $detail = ": $([string]$tagLookupErrors[0])"
+                }
+                $script:TagRuleFailure = $true
+                $message = "Snapshot tag rule is configured but vCenter has no readable tag named '$tagRuleName'; backups are blocked until the tag exists or the rule is cleared$detail"
+                Write-NarvikTagRuleError -Message $message
+                throw [System.Exception]::new($message)
+            }
+
+            try {
+                $tagAssignments = @(Get-TagAssignment -Tag $tagViews -ErrorAction Stop | Where-Object { $null -ne $_ })
+            }
+            catch {
+                $script:TagRuleFailure = $true
+                $message = "vCenter assignments of tag '$tagRuleName' could not be read while the snapshot tag rule is configured; backups are blocked: $($_.Exception.Message)"
+                Write-NarvikTagRuleError -Message $message
+                throw [System.Exception]::new($message)
+            }
+
+            $script:LastTagRuleErrorLogged = [datetime]::MinValue
+            Write-NarvikLog -Level DEBUG -Message "Collected $($tagAssignments.Count) vCenter assignment(s) of tag '$tagRuleName'."
         }
 
         $folderMap = @{}
@@ -2087,6 +2176,7 @@ function Get-NarvikVCenterData {
             VMs                  = $sortedVms
             Datastores           = @($datastores)
             DatastoreClusters    = @($datastoreClusters)
+            TagRuleName          = $tagRuleName
             TagDataAvailable     = [bool]$tagDataAvailable
             UnknownPriorityClusters = @($unknownPriorityClusters)
             VmCount              = $sortedVms.Count
@@ -2106,7 +2196,11 @@ function Update-NarvikVCenterCache {
     if ($null -ne $script:VCache) {
         $age = $now - $script:VCache.CollectedAt
         if ($age.TotalHours -lt 1.0) {
-            return $true
+            if (Test-NarvikVCacheTagRuleCurrent -Cache $script:VCache) {
+                return $true
+            }
+
+            Write-NarvikLog -Level DEBUG -Message 'The cached vCenter inventory was collected with a different snapshot tag rule; refreshing it.'
         }
     }
 
@@ -2123,6 +2217,7 @@ function Update-NarvikVCenterCache {
     }
 
     $script:LastVCenterAttempt = $now
+    $script:TagRuleFailure = $false
 
     try {
         $cache = Get-NarvikVCenterData
@@ -2132,7 +2227,35 @@ function Update-NarvikVCenterCache {
         return $true
     }
     catch {
-        Write-NarvikLog -Level WARNING -Message "vCenter inventory collection failed: $($_.Exception.Message)"
+        if ($script:TagRuleFailure) {
+            $script:TagRuleFailure = $false
+            # Get-NarvikVCenterData already logged this failure, and it can
+            # repeat on every retry. What is left here is the cached inventory:
+            # its tag data is not trustworthy any more, and eligibility uses it
+            # to decide, so the cache must not keep backups running.
+            if ($null -ne $script:VCache) {
+                $wasAvailable = [bool]$script:VCache.TagDataAvailable
+                if ($null -ne $script:VCache.PSObject.Properties['TagDataAvailable']) {
+                    $script:VCache.TagDataAvailable = $false
+                }
+                else {
+                    Add-Member -InputObject $script:VCache -NotePropertyName 'TagDataAvailable' -NotePropertyValue $false
+                }
+
+                if ($wasAvailable) {
+                    Write-NarvikLog -Level WARNING -Message 'Cached tag data was discarded because the snapshot tag rule could not be collected; no VM is eligible while the rule is configured and tags cannot be read.'
+                }
+
+                # Eligibility is only recomputed after a successful collection,
+                # so the discarded tag data has to be applied here: otherwise a
+                # VM that was eligible a moment ago would keep being scheduled.
+                Update-NarvikEligibility
+            }
+        }
+        else {
+            Write-NarvikLog -Level WARNING -Message "vCenter inventory collection failed: $($_.Exception.Message)"
+        }
+
         if ($null -ne $script:VCache) {
             return $true
         }

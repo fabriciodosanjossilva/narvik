@@ -7,12 +7,13 @@ Narvik is a backup automation for "IBM Storage Protect for VMWare" on Windows Se
 - Unattended daemon: runs continuously, no external scheduler needed.
   Stopping is graceful: `stop.txt` lets active backups finish, `abort.txt`
   kills them and exits immediately.
-- Automatic inventory: reads VMs, hosts, datastores, datastore clusters and
-  tags from vCenter, caches the result for an hour and retries a failed
-  collection after a minute, so a flaky vCenter never halts backups for long.
-  Tags are always read, so enabling the opt-out rule does not wait for the
-  cache to expire. Narvik only reads from vCenter: it never creates,
-  reconfigures or deletes anything there.
+- Automatic inventory: reads VMs, hosts, datastores, datastore clusters and,
+  only when the opt-out rule is configured, the assignments of that single tag
+  from vCenter; caches the result for an hour and retries a failed collection
+  after a minute, so a flaky vCenter never halts backups for long. The cache is
+  refreshed as soon as the configured tag changes, so enabling or changing the
+  opt-out rule does not wait for it to expire. Narvik only reads from vCenter:
+  it never creates, reconfigures or deletes anything there.
 - Policy by placement: each datastore cluster maps to an IBM Storage
   Protect management class, so the backup policy follows where the VM lives.
 - Incremental backups: backs up any eligible VM whose last incremental
@@ -65,8 +66,12 @@ Narvik is a backup automation for "IBM Storage Protect for VMWare" on Windows Se
   `NAO_FAZER_BACKUP_POR_SNAPSHOT`) removes a VM from backups when it is on the
   VM itself, its cluster, its resource pool, its own VM folder or any datastore
   or datastore cluster backing its disks; a tag on an ancestor folder does not
-  apply. If the rule is configured and the tag assignments cannot be read, no
-  VM is backed up rather than risk one the operator asked to skip.
+  apply. Only that tag is read from vCenter, and only while the rule is
+  configured. If the rule is configured and the tag assignments cannot be read,
+  no VM is backed up rather than risk one the operator asked to skip. A
+  configured tag that does not exist in vCenter also stops every backup, logged
+  as an error (not emailed) until the tag exists or the rule is cleared:
+  silently ignoring the exclusion is never an option.
 - VMware Live Site Recovery placeholder VMs are skipped silently.
 - Email alerts: duplicate names, inventory rule violations, disk sizes not
   aligned to 1 MiB, independent disks, critical dsmc errors and fatal errors
