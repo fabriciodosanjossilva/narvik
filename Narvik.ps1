@@ -1567,37 +1567,6 @@ function Disconnect-NarvikVCenter {
     }
 }
 
-function Get-NarvikMoRefTags {
-    param(
-        [AllowEmptyString()]
-        [string]$MoRefValue,
-        [hashtable]$TagMap
-    )
-
-    if ([string]::IsNullOrWhiteSpace($MoRefValue) -or $null -eq $TagMap) {
-        return @()
-    }
-
-    if ($TagMap.ContainsKey($MoRefValue)) {
-        return @($TagMap[$MoRefValue])
-    }
-
-    return @()
-}
-
-function Get-NarvikViewTags {
-    param(
-        $View,
-        [hashtable]$TagMap
-    )
-
-    if ($null -eq $View -or $null -eq $View.MoRef) {
-        return @()
-    }
-
-    return @(Get-NarvikMoRefTags -MoRefValue ([string]$View.MoRef.Value) -TagMap $TagMap)
-}
-
 function Get-NarvikFolderPath {
     param(
         [string]$FolderId,
@@ -1712,28 +1681,189 @@ function Test-NarvikSiteRecoveryPlaceholder {
     return $false
 }
 
+function Get-NarvikTaggedMoRefs {
+    param(
+        [object[]]$VmViews = @(),
+        [object[]]$DatastoreViews = @(),
+        [object[]]$DatastoreClusterViews = @(),
+        [object[]]$FolderViews = @(),
+        [object[]]$HostViews = @(),
+        [object[]]$ResourcePoolViews = @(),
+        [object[]]$ClusterViews = @(),
+        [object[]]$TagViews = @()
+    )
+
+    $taggedMoRefs = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    if (@($TagViews).Count -eq 0) {
+        return ,$taggedMoRefs
+    }
+
+    # One Get-TagAssignment call per entity type, with -Entity, instead of one
+    # global query that returns every assignment of the tag. View objects are
+    # not VIObjectCore, so each type is converted to managed objects first.
+    $typeSets = @(
+        [pscustomobject]@{ Label = 'VM'; Views = @($VmViews) },
+        [pscustomobject]@{ Label = 'Datastore'; Views = @($DatastoreViews) },
+        [pscustomobject]@{ Label = 'Datastore cluster'; Views = @($DatastoreClusterViews) },
+        [pscustomobject]@{ Label = 'Folder'; Views = @($FolderViews) },
+        [pscustomobject]@{ Label = 'Host'; Views = @($HostViews) },
+        [pscustomobject]@{ Label = 'Resource pool'; Views = @($ResourcePoolViews) },
+        [pscustomobject]@{ Label = 'Cluster'; Views = @($ClusterViews) }
+    )
+
+    foreach ($typeSet in $typeSets) {
+        $views = @($typeSet.Views)
+        if ($views.Count -eq 0) {
+            continue
+        }
+
+        $moRefs = New-Object 'System.Collections.Generic.List[object]'
+        foreach ($view in $views) {
+            if ($null -eq $view -or $null -eq $view.MoRef) {
+                continue
+            }
+
+            # StoragePod derives from Folder, but Get-Folder rejects its MoRef.
+            if ($typeSet.Label -eq 'Folder' -and $view.GetType().Name -eq 'StoragePod') {
+                continue
+            }
+
+            [void]$moRefs.Add($view.MoRef)
+        }
+
+        if ($moRefs.Count -eq 0) {
+            continue
+        }
+
+        $entities = @()
+        switch ($typeSet.Label) {
+            'VM' {
+                $entities = @(Get-VM -Id $moRefs.ToArray() -ErrorAction Stop)
+            }
+            'Datastore' {
+                $entities = @(Get-Datastore -Id $moRefs.ToArray() -ErrorAction Stop)
+            }
+            'Datastore cluster' {
+                $entities = @(Get-DatastoreCluster -Id $moRefs.ToArray() -ErrorAction Stop)
+            }
+            'Folder' {
+                $entities = @(Get-Folder -Id $moRefs.ToArray() -ErrorAction Stop)
+            }
+            'Host' {
+                $entities = @(Get-VMHost -Id $moRefs.ToArray() -ErrorAction Stop)
+            }
+            'Resource pool' {
+                $entities = @(Get-ResourcePool -Id $moRefs.ToArray() -ErrorAction Stop)
+            }
+            'Cluster' {
+                $entities = @(Get-Cluster -Id $moRefs.ToArray() -ErrorAction Stop)
+            }
+        }
+
+        if ($entities.Count -eq 0) {
+            continue
+        }
+
+        $assignments = @(Get-TagAssignment -Entity $entities -Tag $TagViews -ErrorAction Stop | Where-Object { $null -ne $_ })
+        foreach ($assignment in $assignments) {
+            if ($null -eq $assignment.Entity) {
+                continue
+            }
+
+            $morefValue = ''
+            try {
+                if ($null -ne $assignment.Entity.ExtensionData -and $null -ne $assignment.Entity.ExtensionData.MoRef) {
+                    $morefValue = [string]$assignment.Entity.ExtensionData.MoRef.Value
+                }
+            }
+            catch {
+                $morefValue = ''
+            }
+
+            if ([string]::IsNullOrWhiteSpace($morefValue)) {
+                $entityId = [string]$assignment.Entity.Id
+                if ($entityId -match '^[^-]+-(.+)$') {
+                    $morefValue = $matches[1]
+                }
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($morefValue)) {
+                [void]$taggedMoRefs.Add($morefValue)
+            }
+        }
+    }
+
+    return ,$taggedMoRefs
+}
+
 function Get-NarvikVCenterData {
     $collectStart = Get-Date
+    $collectionTimer = [System.Diagnostics.Stopwatch]::StartNew()
     $connection = $null
 
     try {
         $connection = Connect-NarvikVCenter
 
         $vmViews = @(Get-View -ViewType VirtualMachine -Property Name, Config, Runtime.Host, Parent, ResourcePool -ErrorAction Stop | Where-Object { $null -ne $_ })
-        $dsViews = @(Get-View -ViewType Datastore -Property Name -ErrorAction Stop | Where-Object { $null -ne $_ })
+        $dsViews = @(Get-View -ViewType Datastore -Property Name, Summary.Type -ErrorAction Stop | Where-Object { $null -ne $_ })
         $podViews = @(Get-View -ViewType StoragePod -Property Name, ChildEntity -ErrorAction Stop | Where-Object { $null -ne $_ })
-        $folderViews = @(Get-View -ViewType Folder -Property Name, Parent -ErrorAction Stop | Where-Object { $null -ne $_ })
+        # Only VM folders are relevant: they build the VM folder path and are
+        # the only folder scope of the opt-out rule. Datastore, host, network
+        # and other folder types are never read.
+        $folderViews = @(Get-View -ViewType Folder -Property Name, Parent, ChildType -ErrorAction Stop | Where-Object {
+                $null -ne $_ -and (@($_.ChildType) -contains 'VirtualMachine' -or @($_.ChildType) -contains 'VirtualApp')
+            })
         $hostViews = @(Get-View -ViewType HostSystem -Property Name, Parent -ErrorAction Stop | Where-Object { $null -ne $_ })
         $rpViews = @(Get-View -ViewType ResourcePool -Property Name -ErrorAction Stop | Where-Object { $null -ne $_ })
+        $clusterViews = @(Get-View -ViewType ClusterComputeResource -Property Name -ErrorAction Stop | Where-Object { $null -ne $_ })
+        $viewReadMs = $collectionTimer.ElapsedMilliseconds
+
+        $datastoreMap = @{}
+        $vmfsDatastoreViews = New-Object 'System.Collections.Generic.List[object]'
+        $ignoredDatastoreTypes = @{}
+        foreach ($datastore in $dsViews) {
+            $datastoreId = [string]$datastore.MoRef.Value
+            $datastoreType = ''
+            if ($null -ne $datastore.Summary -and $null -ne $datastore.Summary.Type) {
+                $datastoreType = [string]$datastore.Summary.Type
+            }
+
+            $datastoreMap[$datastoreId] = [pscustomobject]@{
+                Name = [string]$datastore.Name
+                Type = $datastoreType
+            }
+
+            if ($datastoreType -eq 'VMFS') {
+                [void]$vmfsDatastoreViews.Add($datastore)
+            }
+            else {
+                if (-not $ignoredDatastoreTypes.ContainsKey($datastoreType)) {
+                    $ignoredDatastoreTypes[$datastoreType] = 0
+                }
+                $ignoredDatastoreTypes[$datastoreType] = [int]$ignoredDatastoreTypes[$datastoreType] + 1
+            }
+        }
+
+        if ($ignoredDatastoreTypes.Count -gt 0) {
+            $ignoredParts = New-Object 'System.Collections.Generic.List[string]'
+            foreach ($ignoredType in @($ignoredDatastoreTypes.Keys | Sort-Object)) {
+                [void]$ignoredParts.Add("$ignoredType=$($ignoredDatastoreTypes[$ignoredType])")
+            }
+            Write-NarvikLog -Level DEBUG -Message "Ignored non-VMFS datastore(s) for tag collection and inventory listing: $($ignoredParts -join ', ')."
+        }
+
+        $collectionTimer.Restart()
 
         # Tag assignments are read only for the tag named by the snapshot tag
         # rule, and only while that rule is configured: the session needs read
-        # on that one tag instead of on the whole tag catalog. With the rule
-        # configured any failure aborts the collection, so a cached inventory
-        # without tags can never be mistaken for an inventory of untagged VMs.
+        # on that one tag instead of on the whole tag catalog. Assignments are
+        # queried per entity type with -Entity, limited to the entities already
+        # collected. With the rule configured any failure aborts the collection,
+        # so a cached inventory without tags can never be mistaken for an
+        # inventory of untagged VMs.
         $tagRuleName = Get-NarvikSnapshotTagRuleName
         $tagDataAvailable = $true
-        $tagAssignments = @()
+        $taggedMoRefs = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
         if ([string]::IsNullOrWhiteSpace($tagRuleName)) {
             Write-NarvikLog -Level DEBUG -Message 'Snapshot tag rule is not configured; vCenter tag assignments were not collected.'
         }
@@ -1762,7 +1892,7 @@ function Get-NarvikVCenterData {
             }
 
             try {
-                $tagAssignments = @(Get-TagAssignment -Tag $tagViews -ErrorAction Stop | Where-Object { $null -ne $_ })
+                $taggedMoRefs = Get-NarvikTaggedMoRefs -VmViews $vmViews -DatastoreViews $vmfsDatastoreViews -DatastoreClusterViews $podViews -FolderViews $folderViews -HostViews $hostViews -ResourcePoolViews $rpViews -ClusterViews $clusterViews -TagViews $tagViews
             }
             catch {
                 $script:TagRuleFailure = $true
@@ -1772,14 +1902,16 @@ function Get-NarvikVCenterData {
             }
 
             $script:LastTagRuleErrorLogged = [datetime]::MinValue
-            Write-NarvikLog -Level DEBUG -Message "Collected $($tagAssignments.Count) vCenter assignment(s) of tag '$tagRuleName'."
+            Write-NarvikLog -Level DEBUG -Message "Collected tag data for $($taggedMoRefs.Count) tagged object(s) of tag '$tagRuleName'."
         }
+
+        $tagReadMs = $collectionTimer.ElapsedMilliseconds
+        $collectionTimer.Restart()
 
         $folderMap = @{}
         foreach ($folder in $folderViews) {
-            # StoragePod derives from Folder, so datastore clusters also show up
-            # in a Folder view. They are not VM folders and cannot be a VM's
-            # parent, so keep the map limited to real folders.
+            # The view was already limited to VM folders; the StoragePod guard
+            # stays as a defensive check because it derives from Folder.
             if ($folder.GetType().Name -eq 'StoragePod') {
                 continue
             }
@@ -1806,7 +1938,6 @@ function Get-NarvikVCenterData {
         # cluster tag rule never applies. All compute clusters are read, not
         # only those that host a VM, so a configured name is reported as
         # unknown only when no cluster with that name exists at all.
-        $clusterViews = @(Get-View -ViewType ClusterComputeResource -Property Name -ErrorAction Stop | Where-Object { $null -ne $_ })
         $clusterNames = @{}
         $environmentClusterNames = @{}
         foreach ($clusterView in $clusterViews) {
@@ -1831,11 +1962,6 @@ function Get-NarvikVCenterData {
             Write-NarvikLog -Level WARNING -Message "Cluster '$unknownCluster' from 'priority_clusters' was not found in the environment."
         }
 
-        $datastoreMap = @{}
-        foreach ($datastore in $dsViews) {
-            $datastoreMap[[string]$datastore.MoRef.Value] = $datastore
-        }
-
         $podByDatastore = @{}
         foreach ($pod in $podViews) {
             foreach ($child in @($pod.ChildEntity)) {
@@ -1845,70 +1971,18 @@ function Get-NarvikVCenterData {
             }
         }
 
-        $tagMap = @{}
-        foreach ($assignment in $tagAssignments) {
-            if ($null -eq $assignment.Entity -or $null -eq $assignment.Tag) {
-                continue
-            }
-
-            $keys = New-Object 'System.Collections.Generic.List[string]'
-
-            try {
-                if ($null -ne $assignment.Entity.ExtensionData -and $null -ne $assignment.Entity.ExtensionData.MoRef) {
-                    $morefValue = [string]$assignment.Entity.ExtensionData.MoRef.Value
-                    if (-not [string]::IsNullOrWhiteSpace($morefValue) -and -not $keys.Contains($morefValue)) {
-                        [void]$keys.Add($morefValue)
-                    }
-                }
-            }
-            catch {
-            }
-
-            try {
-                if ($null -ne $assignment.Entity.MoRef) {
-                    $morefValue = [string]$assignment.Entity.MoRef.Value
-                    if (-not [string]::IsNullOrWhiteSpace($morefValue) -and -not $keys.Contains($morefValue)) {
-                        [void]$keys.Add($morefValue)
-                    }
-                }
-            }
-            catch {
-            }
-
-            $entityId = ''
-            try {
-                $entityId = [string]$assignment.Entity.Id
-            }
-            catch {
-            }
-
-            if (-not [string]::IsNullOrWhiteSpace($entityId)) {
-                if (-not $keys.Contains($entityId)) {
-                    [void]$keys.Add($entityId)
-                }
-
-                if ($entityId -match '^(?:VirtualMachine|Datastore|StoragePod|Folder|HostSystem|ClusterComputeResource|Datacenter|ResourcePool|Network|DistributedVirtualPortgroup|VirtualApp)-(.+)$') {
-                    $normalized = $matches[1]
-                    if (-not [string]::IsNullOrWhiteSpace($normalized) -and -not $keys.Contains($normalized)) {
-                        [void]$keys.Add($normalized)
-                    }
-                }
-            }
-
-            foreach ($key in $keys) {
-                if (-not $tagMap.ContainsKey($key)) {
-                    $tagMap[$key] = New-Object 'System.Collections.Generic.List[string]'
-                }
-                [void]$tagMap[$key].Add([string]$assignment.Tag.Name)
-            }
-        }
-
         $datastores = [System.Collections.Generic.List[object]]::new()
-        foreach ($datastore in $dsViews) {
+        foreach ($datastore in $vmfsDatastoreViews) {
+            $datastoreId = [string]$datastore.MoRef.Value
+            $datastoreTags = @()
+            if ($taggedMoRefs.Contains($datastoreId)) {
+                $datastoreTags = @($tagRuleName)
+            }
+
             [void]$datastores.Add([pscustomobject]@{
                 Name  = [string]$datastore.Name
-                MoRef = [string]$datastore.MoRef.Value
-                Tags  = @(Get-NarvikViewTags -View $datastore -TagMap $tagMap)
+                MoRef = $datastoreId
+                Tags  = $datastoreTags
             })
         }
 
@@ -1917,19 +1991,29 @@ function Get-NarvikVCenterData {
             $memberNames = New-Object 'System.Collections.Generic.List[string]'
             foreach ($child in @($pod.ChildEntity)) {
                 if ($null -ne $child -and $datastoreMap.ContainsKey([string]$child.Value)) {
-                    [void]$memberNames.Add([string]$datastoreMap[[string]$child.Value].Name)
+                    $member = $datastoreMap[[string]$child.Value]
+                    if ($member.Type -eq 'VMFS') {
+                        [void]$memberNames.Add([string]$member.Name)
+                    }
                 }
+            }
+
+            $podId = [string]$pod.MoRef.Value
+            $podTags = @()
+            if ($taggedMoRefs.Contains($podId)) {
+                $podTags = @($tagRuleName)
             }
 
             [void]$datastoreClusters.Add([pscustomobject]@{
                 Name       = [string]$pod.Name
-                MoRef      = [string]$pod.MoRef.Value
-                Tags       = @(Get-NarvikViewTags -View $pod -TagMap $tagMap)
+                MoRef      = $podId
+                Tags       = $podTags
                 Datastores = @($memberNames)
             })
         }
 
         $vms = [System.Collections.Generic.List[object]]::new()
+        $folderPathCache = @{}
         $notesParseWarnings = 0
         $lastFullChanged = $false
 
@@ -1952,14 +2036,32 @@ function Get-NarvikVCenterData {
                 continue
             }
 
+            $vmMoref = [string]$vmView.MoRef.Value
+            $vmTags = @()
+            if ($taggedMoRefs.Contains($vmMoref)) {
+                $vmTags = @($tagRuleName)
+            }
+
             $folderId = ''
-            if ($null -ne $vmView.Parent) {
+            if ($null -ne $vmView.Parent -and [string]$vmView.Parent.Type -eq 'Folder') {
                 $folderId = [string]$vmView.Parent.Value
             }
 
             $folderName = ''
+            $folderTags = @()
             if (-not [string]::IsNullOrWhiteSpace($folderId) -and $folderMap.ContainsKey($folderId)) {
                 $folderName = [string]$folderMap[$folderId].Name
+                if ($taggedMoRefs.Contains($folderId)) {
+                    $folderTags = @($tagRuleName)
+                }
+            }
+
+            $folderPath = ''
+            if (-not [string]::IsNullOrWhiteSpace($folderId)) {
+                if (-not $folderPathCache.ContainsKey($folderId)) {
+                    $folderPathCache[$folderId] = Get-NarvikFolderPath -FolderId $folderId -FolderMap $folderMap
+                }
+                $folderPath = [string]$folderPathCache[$folderId]
             }
 
             $resourcePoolId = ''
@@ -1968,27 +2070,39 @@ function Get-NarvikVCenterData {
             }
 
             $resourcePoolName = ''
+            $resourcePoolTags = @()
             if (-not [string]::IsNullOrWhiteSpace($resourcePoolId) -and $resourcePoolMap.ContainsKey($resourcePoolId)) {
                 $resourcePoolName = $resourcePoolMap[$resourcePoolId]
+                if ($taggedMoRefs.Contains($resourcePoolId)) {
+                    $resourcePoolTags = @($tagRuleName)
+                }
             }
 
             $hostId = ''
             $hostName = ''
+            $hostTags = @()
             if ($null -ne $vmView.Runtime -and $null -ne $vmView.Runtime.Host) {
                 $hostId = [string]$vmView.Runtime.Host.Value
                 if ($hostMap.ContainsKey($hostId)) {
                     $hostName = [string]$hostMap[$hostId]
                 }
+                if ($taggedMoRefs.Contains($hostId)) {
+                    $hostTags = @($tagRuleName)
+                }
             }
 
             $hostClusterId = ''
             $hostClusterName = ''
+            $clusterTags = @()
             if (-not [string]::IsNullOrWhiteSpace($hostId) -and $hostParentMap.ContainsKey($hostId)) {
                 $hostParent = $hostParentMap[$hostId]
                 if ($null -ne $hostParent -and [string]$hostParent.Type -eq 'ClusterComputeResource') {
                     $hostClusterId = [string]$hostParent.Value
                     if ($clusterNames.ContainsKey($hostClusterId)) {
                         $hostClusterName = [string]$clusterNames[$hostClusterId]
+                    }
+                    if ($taggedMoRefs.Contains($hostClusterId)) {
+                        $clusterTags = @($tagRuleName)
                     }
                 }
             }
@@ -2059,8 +2173,10 @@ function Get-NarvikVCenterData {
                     }
 
                     $datastoreName = ''
+                    $datastoreType = ''
                     if (-not [string]::IsNullOrWhiteSpace($datastoreId) -and $datastoreMap.ContainsKey($datastoreId)) {
                         $datastoreName = [string]$datastoreMap[$datastoreId].Name
+                        $datastoreType = [string]$datastoreMap[$datastoreId].Type
                     }
 
                     $clusterName = ''
@@ -2068,6 +2184,16 @@ function Get-NarvikVCenterData {
                     if (-not [string]::IsNullOrWhiteSpace($datastoreId) -and $podByDatastore.ContainsKey($datastoreId)) {
                         $clusterName = [string]$podByDatastore[$datastoreId].Name
                         $datastoreClusterId = [string]$podByDatastore[$datastoreId].MoRef.Value
+                    }
+
+                    $datastoreTags = @()
+                    if (-not [string]::IsNullOrWhiteSpace($datastoreId) -and $taggedMoRefs.Contains($datastoreId)) {
+                        $datastoreTags = @($tagRuleName)
+                    }
+
+                    $datastoreClusterTags = @()
+                    if (-not [string]::IsNullOrWhiteSpace($datastoreClusterId) -and $taggedMoRefs.Contains($datastoreClusterId)) {
+                        $datastoreClusterTags = @($tagRuleName)
                     }
 
                     $label = ''
@@ -2104,9 +2230,10 @@ function Get-NarvikVCenterData {
                         SizeGB               = [double]$sizeGb
                         CapacityInKB         = [long]$capacityKb
                         Datastore            = $datastoreName
+                        DatastoreType        = $datastoreType
                         DatastoreCluster     = $clusterName
-                        DatastoreTags        = @(Get-NarvikMoRefTags -MoRefValue $datastoreId -TagMap $tagMap)
-                        DatastoreClusterTags = @(Get-NarvikMoRefTags -MoRefValue $datastoreClusterId -TagMap $tagMap)
+                        DatastoreTags        = $datastoreTags
+                        DatastoreClusterTags = $datastoreClusterTags
                         DiskMode             = $diskMode
                         BackingType          = $backingType
                     })
@@ -2137,21 +2264,23 @@ function Get-NarvikVCenterData {
 
             [void]$vms.Add([pscustomobject]@{
                 Name              = $vmName
-                MoRef             = [string]$vmView.MoRef.Value
-                FolderPath        = Get-NarvikFolderPath -FolderId $folderId -FolderMap $folderMap
+                MoRef             = $vmMoref
+                FolderPath        = $folderPath
                 FolderMoRef       = $folderId
                 FolderName        = $folderName
-                FolderTags        = @(Get-NarvikMoRefTags -MoRefValue $folderId -TagMap $tagMap)
+                FolderTags        = $folderTags
                 ClusterMoRef      = $hostClusterId
                 ClusterName       = $hostClusterName
-                ClusterTags       = @(Get-NarvikMoRefTags -MoRefValue $hostClusterId -TagMap $tagMap)
+                ClusterTags       = $clusterTags
                 ClusterPriority   = [int]$priorityClusterSetting.Priority
                 ClusterMaxThreads = [int]$priorityClusterSetting.MaxThreads
                 ResourcePoolMoRef = $resourcePoolId
                 ResourcePoolName  = $resourcePoolName
-                ResourcePoolTags  = @(Get-NarvikMoRefTags -MoRefValue $resourcePoolId -TagMap $tagMap)
+                ResourcePoolTags  = $resourcePoolTags
+                HostMoRef         = $hostId
                 HostName          = $hostName
-                Tags              = @(Get-NarvikViewTags -View $vmView -TagMap $tagMap)
+                HostTags          = $hostTags
+                Tags              = $vmTags
                 Notes             = $notes
                 LastBackup        = $lastBackup
                 TotalSizeGB       = [math]::Round($totalSizeGb, 2)
@@ -2170,6 +2299,8 @@ function Get-NarvikVCenterData {
         }
 
         $sortedVms = @($vms | Sort-Object -Property FolderPath, Name)
+        $buildMs = $collectionTimer.ElapsedMilliseconds
+        Write-NarvikLog -Level DEBUG -Message "vCenter inventory timing: view reads $viewReadMs ms, tag collection $tagReadMs ms, inventory build $buildMs ms."
 
         return [pscustomobject]@{
             CollectedAt          = $collectStart
@@ -2223,7 +2354,7 @@ function Update-NarvikVCenterCache {
         $cache = Get-NarvikVCenterData
         $script:VCache = $cache
         $script:VCacheRefreshedThisLoop = $true
-        Write-NarvikLog -Level INFO -Message "vCenter inventory collected: $($cache.VmCount) VM(s), $($cache.DatastoreCount) datastore(s), $($cache.DatastoreClusterCount) datastore cluster(s)."
+        Write-NarvikLog -Level INFO -Message "vCenter inventory collected: $($cache.VmCount) VM(s), $($cache.DatastoreCount) VMFS datastore(s), $($cache.DatastoreClusterCount) datastore cluster(s)."
         return $true
     }
     catch {
@@ -2312,34 +2443,29 @@ function Get-NarvikVmTagViolations {
     }
 
     # Entities whose tag opts a VM out of snapshot backups. The datastore scope
-    # is the datastores that back the VM's disks, and the folder scope is the
-    # VM's direct folder only: a tag on an ancestor folder does not apply.
-    $scopes = New-Object 'System.Collections.Generic.List[object]'
-    [void]$scopes.Add([pscustomobject]@{ Label = 'VM'; Name = ''; Tags = @($Vm.Tags) })
-    [void]$scopes.Add([pscustomobject]@{ Label = 'Cluster'; Name = [string]$Vm.ClusterName; Tags = @($Vm.ClusterTags) })
-    [void]$scopes.Add([pscustomobject]@{ Label = 'Resource pool'; Name = [string]$Vm.ResourcePoolName; Tags = @($Vm.ResourcePoolTags) })
-    [void]$scopes.Add([pscustomobject]@{ Label = 'Folder'; Name = [string]$Vm.FolderName; Tags = @($Vm.FolderTags) })
+    # is the VMFS datastores that back the VM's disks, the folder scope is the
+    # VM's direct VM folder only (a tag on an ancestor folder does not apply),
+    # and the host scope is the host running the VM.
+    $violations = New-Object 'System.Collections.Generic.List[string]'
 
-    foreach ($disk in @($Vm.Disks)) {
-        if ($null -eq $disk) {
-            continue
-        }
-
-        [void]$scopes.Add([pscustomobject]@{ Label = 'Datastore'; Name = [string]$disk.Datastore; Tags = @($disk.DatastoreTags) })
-        [void]$scopes.Add([pscustomobject]@{ Label = 'Datastore cluster'; Name = [string]$disk.DatastoreCluster; Tags = @($disk.DatastoreClusterTags) })
+    if (Test-NarvikTagPresent -Tags @($Vm.Tags) -TagName $TagName) {
+        [void]$violations.Add("VM tag '$TagName'")
     }
 
-    $violations = New-Object 'System.Collections.Generic.List[string]'
-    foreach ($scope in $scopes) {
+    $namedScopes = @(
+        [pscustomobject]@{ Label = 'Cluster'; Name = [string]$Vm.ClusterName; Tags = @($Vm.ClusterTags) },
+        [pscustomobject]@{ Label = 'Resource pool'; Name = [string]$Vm.ResourcePoolName; Tags = @($Vm.ResourcePoolTags) },
+        [pscustomobject]@{ Label = 'Folder'; Name = [string]$Vm.FolderName; Tags = @($Vm.FolderTags) },
+        [pscustomobject]@{ Label = 'Host'; Name = [string]$Vm.HostName; Tags = @($Vm.HostTags) }
+    )
+
+    foreach ($scope in $namedScopes) {
         if (-not (Test-NarvikTagPresent -Tags @($scope.Tags) -TagName $TagName)) {
             continue
         }
 
         $name = [string]$scope.Name
-        if ($scope.Label -eq 'VM') {
-            $reason = "VM tag '$TagName'"
-        }
-        elseif ([string]::IsNullOrWhiteSpace($name)) {
+        if ([string]::IsNullOrWhiteSpace($name)) {
             $reason = "$($scope.Label) tag '$TagName'"
         }
         else {
@@ -2348,6 +2474,35 @@ function Get-NarvikVmTagViolations {
 
         if (-not $violations.Contains($reason)) {
             [void]$violations.Add($reason)
+        }
+    }
+
+    foreach ($disk in @($Vm.Disks)) {
+        if ($null -eq $disk) {
+            continue
+        }
+
+        $diskScopes = @(
+            [pscustomobject]@{ Label = 'Datastore'; Name = [string]$disk.Datastore; Tags = @($disk.DatastoreTags) },
+            [pscustomobject]@{ Label = 'Datastore cluster'; Name = [string]$disk.DatastoreCluster; Tags = @($disk.DatastoreClusterTags) }
+        )
+
+        foreach ($scope in $diskScopes) {
+            if (-not (Test-NarvikTagPresent -Tags @($scope.Tags) -TagName $TagName)) {
+                continue
+            }
+
+            $name = [string]$scope.Name
+            if ([string]::IsNullOrWhiteSpace($name)) {
+                $reason = "$($scope.Label) tag '$TagName'"
+            }
+            else {
+                $reason = "$($scope.Label) '$name' tag '$TagName'"
+            }
+
+            if (-not $violations.Contains($reason)) {
+                [void]$violations.Add($reason)
+            }
         }
     }
 
@@ -2476,11 +2631,34 @@ function Update-NarvikEligibility {
     # safe choice: silently ignoring the operator's exclusion is not an option.
     $tagDataUnavailable = (-not [string]::IsNullOrWhiteSpace($snapshotTagName)) -and (-not [bool]$script:VCache.TagDataAvailable)
 
+    $eligibilityStart = Get-Date
     foreach ($vm in @($script:VCache.VMs)) {
         $reasons = New-Object 'System.Collections.Generic.List[string]'
 
+        # Tag exclusion comes first: a VM related to a tagged entity is not
+        # eligible, and its own characteristics are not checked or reported.
         if ($tagDataUnavailable) {
             Add-NarvikReason -Reasons $reasons -Reason 'Tag assignments are unavailable while the snapshot tag rule is configured'
+            [void]$nonEligible.Add([pscustomobject]@{
+                VM      = $vm
+                Reasons = @($reasons)
+            })
+            continue
+        }
+
+        $tagViolations = @()
+        if (-not [string]::IsNullOrWhiteSpace($snapshotTagName)) {
+            $tagViolations = @(Get-NarvikVmTagViolations -Vm $vm -TagName $snapshotTagName)
+        }
+        if ($tagViolations.Count -gt 0) {
+            foreach ($violation in $tagViolations) {
+                Add-NarvikReason -Reasons $reasons -Reason $violation
+            }
+            [void]$nonEligible.Add([pscustomobject]@{
+                VM      = $vm
+                Reasons = @($reasons)
+            })
+            continue
         }
 
         if ([string]$vm.Name -match $unsupportedNamePattern) {
@@ -2518,12 +2696,7 @@ function Update-NarvikEligibility {
             }
         }
 
-        if ($vm.PSObject.Properties.Name -contains 'ManagementClass') {
-            $vm.ManagementClass = $managementClass
-        }
-        else {
-            Add-Member -InputObject $vm -NotePropertyName 'ManagementClass' -NotePropertyValue $managementClass
-        }
+        $vm.ManagementClass = $managementClass
 
         $invalidSizeDisks = [System.Collections.Generic.List[object]]::new()
         foreach ($disk in @($vm.Disks)) {
@@ -2555,14 +2728,16 @@ function Update-NarvikEligibility {
             })
         }
 
-        foreach ($violation in @(Get-NarvikVmTagViolations -Vm $vm -TagName $snapshotTagName)) {
-            Add-NarvikReason -Reasons $reasons -Reason $violation
-        }
-
         foreach ($disk in @($vm.Disks)) {
             $datastoreName = [string]$disk.Datastore
             if ([string]::IsNullOrWhiteSpace($datastoreName)) {
                 Add-NarvikReason -Reasons $reasons -Reason "Unknown datastore for disk '$($disk.Label)'"
+                continue
+            }
+
+            $datastoreType = [string]$disk.DatastoreType
+            if (-not [string]::IsNullOrWhiteSpace($datastoreType) -and $datastoreType -ne 'VMFS') {
+                Add-NarvikReason -Reasons $reasons -Reason "Disk '$($disk.Label)' is on datastore '$datastoreName' of type '$datastoreType'; only VMFS datastores are supported"
                 continue
             }
 
@@ -2596,11 +2771,20 @@ function Update-NarvikEligibility {
     }
 
     $duplicateCases = [System.Collections.Generic.List[object]]::new()
-    $duplicateGroups = @($initialEligible | Group-Object -Property { $_.Name.ToLowerInvariant() } | Where-Object { $_.Count -gt 1 })
     $duplicateMorefs = @{}
+    $nameGroups = @{}
+    $nameGroupOrder = [System.Collections.Generic.List[string]]::new()
+    foreach ($vm in $initialEligible) {
+        $nameKey = ([string]$vm.Name).ToLowerInvariant()
+        if (-not $nameGroups.ContainsKey($nameKey)) {
+            $nameGroups[$nameKey] = [System.Collections.Generic.List[object]]::new()
+            [void]$nameGroupOrder.Add($nameKey)
+        }
+        [void]$nameGroups[$nameKey].Add($vm)
+    }
 
-    foreach ($group in $duplicateGroups) {
-        $groupVms = @($group.Group)
+    foreach ($nameKey in $nameGroupOrder) {
+        $groupVms = @($nameGroups[$nameKey])
         if ($groupVms.Count -lt 2) {
             continue
         }
@@ -2623,7 +2807,8 @@ function Update-NarvikEligibility {
 
     $finalEligible = @($initialEligible | Where-Object { -not $duplicateMorefs.ContainsKey([string]$_.MoRef) })
 
-    $script:EligibleVMs = @($finalEligible)
+    # Sorted once here; the scheduler only filters pending VMs in this order.
+    $script:EligibleVMs = @($finalEligible | Sort-Object -Property @{ Expression = { [int]$_.ClusterPriority }; Descending = $true }, FolderPath, Name)
     $script:NonEligibleVMs = @($nonEligible)
     $script:DuplicateNameCases = @($duplicateCases)
     $script:UnsupportedNameCases = @($unsupportedNameCases)
@@ -2647,6 +2832,9 @@ function Update-NarvikEligibility {
     }
 
     Write-NarvikMonitoringFiles
+
+    $eligibilityMs = [math]::Round(((Get-Date) - $eligibilityStart).TotalMilliseconds)
+    Write-NarvikLog -Level DEBUG -Message "Eligibility processing took $eligibilityMs ms."
 
     if ($SendAlerts) {
         Send-NarvikDuplicateNameAlerts
@@ -3254,11 +3442,9 @@ function Select-NarvikNextBackup {
     }
 
     $now = Get-Date
-    # The cluster priority is the primary ordering criterion; the VM folder is
-    # the secondary one, as before. Higher priority comes first, so a negative
-    # priority leaves the cluster at the end of the queue.
-    $pending = @(Get-NarvikPendingVMs -Now $now |
-            Sort-Object -Property @{ Expression = { [int]$_.ClusterPriority }; Descending = $true }, FolderPath, Name)
+    # EligibleVMs is already ordered by cluster priority, folder and name;
+    # filtering keeps that order without re-sorting the queue every cycle.
+    $pending = @(Get-NarvikPendingVMs -Now $now)
     $script:PendingVMs = $pending
 
     if ($pending.Count -gt 0) {
