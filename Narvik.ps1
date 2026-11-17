@@ -1087,29 +1087,55 @@ function ConvertFrom-NarvikVmNotes {
         return $null
     }
 
-    # dsmc writes exactly one of these tags after a successful backup:
-    #   <Backup incremental successful in dd/MM/yyyy HH:mm:ss>
-    #   <Backup full successful in dd/MM/yyyy HH:mm:ss>
-    # The timestamp format and the word 'successful' are mandatory. Anything
-    # that does not match this fixed shape is ignored.
-    $pattern = '(?i)<Backup (incremental|full) successful in (\d{2}/\d{2}/\d{4} \d{2}:\d{2}:\d{2})>'
+    # dsmc reports the last backup inside a single Notes block:
+    #   <Last Backup (IBM Spectrum Protect)>
+    #   Status='Successful'
+    #   Last Run Time='MM/DD/YYYY HH:MM:SS'
+    #   Type='Incremental Forever - Incremental|Full'
+    #   </Last Backup>
+    # Line endings are normalized to spaces before parsing, so the values may
+    # span several lines. The status, the date format and the type suffix are
+    # mandatory; anything that does not match this fixed shape is ignored.
+    $normalized = [regex]::Replace($Notes, '\r\n|\r|\n', ' ')
+    $blockPattern = '<Last Backup \(IBM Spectrum Protect\)>([^<>]*)</Last Backup>'
+    $timePattern = 'Last Run Time=''(\d{2}/\d{2}/\d{4} \d{2}:\d{2}:\d{2})'''
+    $typePattern = 'Type=''([^'']*)'''
     $incrementalDate = $null
     $fullDate = $null
 
-    foreach ($match in [regex]::Matches($Notes, $pattern)) {
-        $mode = $match.Groups[1].Value.ToLowerInvariant()
-        $timestampText = $match.Groups[2].Value
-        $parsed = [datetime]::MinValue
-        if (-not [datetime]::TryParseExact($timestampText, 'dd/MM/yyyy HH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::None, [ref]$parsed)) {
+    foreach ($block in [regex]::Matches($normalized, $blockPattern)) {
+        $body = $block.Groups[1].Value
+        if (-not $body.Contains("Status='Successful'")) {
             continue
         }
 
-        if ($mode -eq 'incremental') {
-            if ($null -eq $incrementalDate -or $parsed -gt $incrementalDate) {
-                $incrementalDate = $parsed
-            }
+        $timeMatch = [regex]::Match($body, $timePattern)
+        if (-not $timeMatch.Success) {
+            continue
         }
-        elseif ($null -eq $fullDate -or $parsed -gt $fullDate) {
+
+        $timestampText = $timeMatch.Groups[1].Value
+        $parsed = [datetime]::MinValue
+        if (-not [datetime]::TryParseExact($timestampText, 'MM/dd/yyyy HH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::None, [ref]$parsed)) {
+            continue
+        }
+
+        $typeMatch = [regex]::Match($body, $typePattern)
+        if (-not $typeMatch.Success) {
+            continue
+        }
+
+        $modeMatch = [regex]::Match($typeMatch.Groups[1].Value, '^Incremental Forever - (Incremental|Full)$')
+        if (-not $modeMatch.Success) {
+            continue
+        }
+
+        # A Full backup also counts as the last incremental; an incremental
+        # backup never changes the last full.
+        if ($null -eq $incrementalDate -or $parsed -gt $incrementalDate) {
+            $incrementalDate = $parsed
+        }
+        if ($modeMatch.Groups[1].Value -eq 'Full' -and ($null -eq $fullDate -or $parsed -gt $fullDate)) {
             $fullDate = $parsed
         }
     }
@@ -2115,9 +2141,9 @@ function Get-NarvikVCenterData {
             $lastBackup = $null
             $noteBackups = ConvertFrom-NarvikVmNotes -Notes $notes
             if ($null -ne $noteBackups) {
-                # The tag for an incremental backup is the authoritative value
-                # for the last incremental; the full tag is authoritative for
-                # the last full only. They never overwrite each other.
+                # The Notes block is authoritative for the last incremental;
+                # only a Full block is authoritative for the last full. An
+                # incremental backup never overwrites the last full control.
                 $lastBackup = $noteBackups.Incremental
                 if ($null -ne $noteBackups.Full) {
                     $currentLastFull = $null
@@ -2133,7 +2159,7 @@ function Get-NarvikVCenterData {
             }
             elseif (-not [string]::IsNullOrWhiteSpace($notes)) {
                 $notesParseWarnings++
-                Write-NarvikLog -Level DEBUG -Message "VM '$vmName' has Notes but no valid <Backup ...> tag; its last backup is unknown."
+                Write-NarvikLog -Level DEBUG -Message "VM '$vmName' has Notes but no valid <Last Backup (IBM Spectrum Protect)> block; its last backup is unknown."
             }
 
             $disks = [System.Collections.Generic.List[object]]::new()
@@ -2295,7 +2321,7 @@ function Get-NarvikVCenterData {
         }
 
         if ($notesParseWarnings -gt 0) {
-            Write-NarvikLog -Level WARNING -Message "$notesParseWarnings VM(s) have notes but no valid backup tag; their last incremental backup is unknown."
+            Write-NarvikLog -Level WARNING -Message "$notesParseWarnings VM(s) have notes but no valid Last Backup block; their last incremental backup is unknown."
         }
 
         $sortedVms = @($vms | Sort-Object -Property FolderPath, Name)

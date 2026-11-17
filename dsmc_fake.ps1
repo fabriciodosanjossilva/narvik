@@ -52,12 +52,16 @@
 #                      ANS1715E error line is printed here and the script stops
 #   - -vmmc and -preview are accepted and ignored.
 #   - When DSMC_FAKE_RUNTIME_ROOT is set, the fake also updates the VM Notes
-#     in vCenter, the way real dsmc does. On success it removes every
-#     <Backup ...> tag and appends exactly one tag in the fixed format:
-#       <Backup incremental successful in dd/MM/yyyy HH:mm:ss>
-#       <Backup full successful in dd/MM/yyyy HH:mm:ss>
-#     On failure it removes every <Backup ...> tag. Only tags named exactly
-#     'Backup' are removed; other angle-bracket tags such as <Owner> or
+#     in vCenter, the way real dsmc does. On success it removes the old
+#     <Last Backup (IBM Spectrum Protect)> block and appends exactly one
+#     block in the fixed format:
+#       <Last Backup (IBM Spectrum Protect)>
+#       Status='Successful'
+#       Last Run Time='MM/DD/YYYY HH:MM:SS'
+#       Type='Incremental Forever - Incremental|Full'
+#       </Last Backup>
+#     On failure it removes the block instead. Legacy <Backup ...> tags are
+#     removed as well. Other angle-bracket tags such as <Owner> or
 #     <Note>...</Note> and all remaining text are preserved. The update needs
 #     PowerCLI and a reachable vCenter, and only runs when the environment
 #     variable points at a runtime root containing config.json.
@@ -162,7 +166,8 @@ function Remove-NkFakeBackupTags {
         [string]$Notes
     )
 
-    return [regex]::Replace($Notes, '(?is)<Backup(?:\s[^>]*)?>', '')
+    $cleaned = [regex]::Replace($Notes, '(?s)<Last Backup \(IBM Spectrum Protect\)>.*?</Last Backup>', '')
+    return [regex]::Replace($cleaned, '(?is)<Backup(?:\s[^>]*)?>', '')
 }
 
 function New-NkFakeBackupTag {
@@ -174,13 +179,17 @@ function New-NkFakeBackupTag {
         [datetime]$Timestamp
     )
 
-    $mode = 'incremental'
+    $type = 'Incremental Forever - Incremental'
     if ($Full) {
-        $mode = 'full'
+        $type = 'Incremental Forever - Full'
     }
 
-    $stamp = $Timestamp.ToString('dd/MM/yyyy HH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture)
-    return '<Backup ' + $mode + ' successful in ' + $stamp + '>'
+    $stamp = $Timestamp.ToString('MM/dd/yyyy HH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture)
+    return '<Last Backup (IBM Spectrum Protect)>' + "`r`n" +
+        "Status='Successful'" + "`r`n" +
+        "Last Run Time='" + $stamp + "'" + "`r`n" +
+        "Type='" + $type + "'" + "`r`n" +
+        '</Last Backup>'
 }
 
 function Update-NkFakeVmNotes {
