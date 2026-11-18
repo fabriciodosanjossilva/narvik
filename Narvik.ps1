@@ -1767,12 +1767,18 @@ function Get-NarvikTaggedMoRefs {
         [pscustomobject]@{ Label = 'Cluster'; Entities = @($Clusters) }
     )
 
+    $tagLabel = 'the snapshot tag rule'
+    if ($TagViews.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace([string]$TagViews[0].Name)) {
+        $tagLabel = [string]$TagViews[0].Name
+    }
+
     foreach ($typeSet in $typeSets) {
         $entities = @($typeSet.Entities)
         if ($entities.Count -eq 0) {
             continue
         }
 
+        Write-NarvikLog -Level INFO -Message "Collecting assignments of tag '$tagLabel' for $($entities.Count) $($typeSet.Label) object(s) (Get-TagAssignment)."
         $assignments = @(Get-TagAssignment -Entity $entities -Tag $TagViews -ErrorAction Stop | Where-Object { $null -ne $_ })
         foreach ($assignment in $assignments) {
             if ($null -eq $assignment.Entity) {
@@ -1801,22 +1807,31 @@ function Get-NarvikVCenterData {
         # machine view: the collected objects are also what Get-TagAssignment
         # receives later. Get-VM does not return templates, so Get-Template is
         # read as well and both keep their current place in the inventory.
+        Write-NarvikLog -Level INFO -Message 'Collecting vCenter inventory: virtual machines (Get-VM).'
         $vmObjects = @(Get-VM -ErrorAction Stop | Where-Object { $null -ne $_ })
+        Write-NarvikLog -Level INFO -Message 'Collecting vCenter inventory: templates (Get-Template).'
         $templateObjects = @(Get-Template -ErrorAction Stop | Where-Object { $null -ne $_ })
+        Write-NarvikLog -Level INFO -Message 'Collecting vCenter inventory: datastores (Get-Datastore).'
         $datastoreObjects = @(Get-Datastore -ErrorAction Stop | Where-Object { $null -ne $_ })
+        Write-NarvikLog -Level INFO -Message 'Collecting vCenter inventory: datastore clusters (Get-DatastoreCluster).'
         $datastoreClusterObjects = @(Get-DatastoreCluster -ErrorAction Stop | Where-Object { $null -ne $_ })
         # Only VM folders are relevant: they build the VM folder path and are
         # the only folder scope of the opt-out rule. Datastore, host, network
         # and other folder types are never read.
+        Write-NarvikLog -Level INFO -Message 'Collecting vCenter inventory: VM folders (Get-Folder -Type VM).'
         $folderObjects = @(Get-Folder -Type VM -ErrorAction Stop | Where-Object { $null -ne $_ })
+        Write-NarvikLog -Level INFO -Message 'Collecting vCenter inventory: hosts (Get-VMHost).'
         $hostObjects = @(Get-VMHost -ErrorAction Stop | Where-Object { $null -ne $_ })
+        Write-NarvikLog -Level INFO -Message 'Collecting vCenter inventory: resource pools (Get-ResourcePool).'
         $resourcePoolObjects = @(Get-ResourcePool -ErrorAction Stop | Where-Object { $null -ne $_ })
+        Write-NarvikLog -Level INFO -Message 'Collecting vCenter inventory: clusters (Get-Cluster).'
         $clusterObjects = @(Get-Cluster -ErrorAction Stop | Where-Object { $null -ne $_ })
 
         # Get-HardDisk is issued once per virtual machine collection and once
         # per template collection, and the disks are grouped by their parent.
         $diskObjects = [System.Collections.Generic.List[object]]::new()
         if ($vmObjects.Count -gt 0) {
+            Write-NarvikLog -Level INFO -Message "Collecting virtual machine disks (Get-HardDisk -VM) for $($vmObjects.Count) virtual machine(s)."
             foreach ($disk in @(Get-HardDisk -VM $vmObjects -ErrorAction Stop)) {
                 if ($null -ne $disk) {
                     [void]$diskObjects.Add($disk)
@@ -1824,6 +1839,7 @@ function Get-NarvikVCenterData {
             }
         }
         if ($templateObjects.Count -gt 0) {
+            Write-NarvikLog -Level INFO -Message "Collecting template disks (Get-HardDisk -Template) for $($templateObjects.Count) template(s)."
             foreach ($disk in @(Get-HardDisk -Template $templateObjects -ErrorAction Stop)) {
                 if ($null -ne $disk) {
                     [void]$diskObjects.Add($disk)
@@ -1895,6 +1911,7 @@ function Get-NarvikVCenterData {
             $tagViews = @()
             $tagLookupErrors = @()
             try {
+                Write-NarvikLog -Level INFO -Message "Collecting vCenter tag '$tagRuleName' (Get-Tag)."
                 $tagViews = @(Get-Tag -Name $tagRuleName -ErrorAction SilentlyContinue -ErrorVariable tagLookupErrors | Where-Object { $null -ne $_ })
             }
             catch {
@@ -2196,6 +2213,12 @@ function Get-NarvikVCenterData {
             $lastBackup = $null
             $noteBackups = ConvertFrom-NarvikVmNotes -Notes $notes
             if ($null -ne $noteBackups) {
+                $notesTimestampText = $noteBackups.Incremental.ToString('yyyy-MM-dd HH:mm:ss')
+                $notesTimestampDetail = ''
+                if ($null -ne $noteBackups.Full) {
+                    $notesTimestampDetail = " (full $($noteBackups.Full.ToString('yyyy-MM-dd HH:mm:ss')))"
+                }
+                Write-NarvikLog -Level DEBUG -Message "VM '$vmName': VM Notes timestamp $notesTimestampText$notesTimestampDetail."
                 # The Notes block is authoritative for the last incremental;
                 # only a Full block is authoritative for the last full. An
                 # incremental backup never overwrites the last full control.
@@ -2214,7 +2237,10 @@ function Get-NarvikVCenterData {
             }
             elseif (-not [string]::IsNullOrWhiteSpace($notes)) {
                 $notesParseWarnings++
-                Write-NarvikLog -Level DEBUG -Message "VM '$vmName' has Notes but no valid <Last Backup (IBM Spectrum Protect)> block; its last backup is unknown."
+                Write-NarvikLog -Level DEBUG -Message "VM '$vmName': VM Notes timestamp none; the Notes have no valid <Last Backup (IBM Spectrum Protect)> block, so its last backup is unknown."
+            }
+            else {
+                Write-NarvikLog -Level DEBUG -Message "VM '$vmName': VM Notes timestamp none; the VM has no Notes."
             }
 
             $disks = [System.Collections.Generic.List[object]]::new()
