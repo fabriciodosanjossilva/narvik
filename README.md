@@ -7,13 +7,14 @@ Narvik is a backup automation for "IBM Storage Protect for VMWare" on Windows Se
 - Unattended daemon: runs continuously, no external scheduler needed.
   Stopping is graceful: `stop.txt` lets active backups finish, `abort.txt`
   kills them and exits immediately.
-- Automatic inventory: reads VMs, hosts, datastore clusters, VM folders and
-  datastores, using only VMFS datastores; other datastore types and non-VM
-  folders are ignored. When the opt-out rule is configured, it also reads the
-  assignments of that single tag per entity type (VM, VMFS datastore, datastore
-  cluster, VM folder, host, cluster and resource pool); caches the result for an
-  hour and retries a failed collection after a minute, so a flaky vCenter never
-  halts backups for long. The cache is refreshed as soon as the configured tag
+- Automatic inventory: reads VMs, templates, hosts, datastore clusters, VM
+  folders, datastores and hard disks, using only VMFS datastores; other
+  datastore types and non-VM folders are ignored. When the opt-out rule is
+  configured, it also reads the assignments of that single tag per entity type
+  (VM and template, VMFS datastore, datastore cluster, VM folder, host, cluster
+  and resource pool); caches the result for an hour and retries a failed
+  collection after a minute, so a flaky vCenter never halts backups for long.
+  The cache is refreshed as soon as the configured tag
   changes, so enabling or changing the opt-out rule does not wait for it to
   expire. Narvik only reads from vCenter: it never creates, reconfigures or
   deletes anything there.
