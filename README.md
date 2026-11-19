@@ -8,8 +8,9 @@ Narvik is a backup automation for "IBM Storage Protect for VMWare" on Windows Se
   Stopping is graceful: `stop.txt` lets active backups finish, `abort.txt`
   kills them and exits immediately.
 - Automatic inventory: reads VMs, templates, hosts, datastore clusters, VM
-  folders, datastores and hard disks, using only VMFS datastores; other
-  datastore types and non-VM folders are ignored. When the opt-out rule is
+  folders, datacenters, datastores and hard disks, using only VMFS datastores;
+  other datastore types and non-VM folders are ignored. VM folder paths include
+  the datacenter. When the opt-out rule is
   configured, it also reads the assignments of that single tag per entity type
   (VM and template, VMFS datastore, datastore cluster, VM folder, host, cluster
   and resource pool); caches the result for an hour and retries a failed
@@ -37,15 +38,17 @@ Narvik is a backup automation for "IBM Storage Protect for VMWare" on Windows Se
 - Concurrency control: caps simultaneous `dsmc` processes
   (`max_backup_threads`) and never starts two backups on the same ESXi host
   at the same time.
-- Cluster priority and caps: `priority_clusters` assigns each ESXi cluster an
-  integer priority from -100 to 100 and an optional `max_threads`
-  (default 1000). Eligible VMs are ordered by cluster priority first, higher
-  first and negative last, then by VM folder as before; a positive priority
-  moves the cluster ahead and a negative one moves it to the end. The per
-  cluster `max_threads` is an extra limit on concurrent backups, on top of the
-  global thread limit and the one-per-host rule. Config entries naming a
-  cluster that does not exist in vCenter are logged and reported by email at
-  most once every 24 hours.
+- Cluster and resource pool priority, with caps: `priority_clusters` assigns
+  each ESXi cluster an integer priority from -100 to 100; `priority_resource_pools`
+  assigns a priority to a resource pool inside a named cluster; and
+  `cluster_max_threads` sets a per-cluster concurrency cap (default 1000).
+  Eligible VMs are ordered by cluster priority first, then resource pool
+  priority, then the full VM folder path including the datacenter; higher
+  priorities come first and negative ones last. VMs outside a cluster or a
+  resource pool use priority 0. The per-cluster `max_threads` is an extra limit
+  on concurrent backups, on top of the global thread limit and the one-per-host
+  rule. Config entries naming a cluster or resource pool that does not exist
+  in vCenter are logged and reported by email at most once every 24 hours.
 - Failure backoff: a VM that keeps failing is retried with an increasing
   delay (one minute, then quadrupling on every further failure), capped at
   12 hours, instead of hammering the backup server.

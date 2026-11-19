@@ -496,6 +496,8 @@ function Import-NarvikConfig {
         'dont_backup_by_snapshot_tag_name',
         'datastore_cluster_to_management_class',
         'priority_clusters',
+        'priority_resource_pools',
+        'cluster_max_threads',
         'smtp_server',
         'smtp_port',
         'smtp_use_ssl',
@@ -602,9 +604,8 @@ function Import-NarvikConfig {
         }
     }
 
-    # Per-cluster backup priority and concurrency cap. The list is optional:
-    # clusters that are not listed keep priority 0 and max_threads 1000, which
-    # means no practical cap beyond the global one and the one-per-host rule.
+    # Per-cluster backup priority. The list is optional: clusters that are not
+    # listed keep priority 0.
     $priorityClusters = @{}
     $priorityClustersValue = Get-NarvikConfigValue -Config $config -Key 'priority_clusters'
     if ($null -ne $priorityClustersValue) {
@@ -618,19 +619,19 @@ function Import-NarvikConfig {
             $priorityClusterItems = @($priorityClustersValue)
         }
         else {
-            throw [System.Exception]::new("Configuration key 'priority_clusters' must be an array of objects with 'name', 'priority' and optional 'max_threads'.")
+            throw [System.Exception]::new("Configuration key 'priority_clusters' must be an array of objects with 'cluster' and 'priority'.")
         }
         foreach ($item in $priorityClusterItems) {
             if ($null -eq $item -or $item -is [string] -or $item -is [array] -or $item -is [ValueType]) {
-                throw [System.Exception]::new("Configuration key 'priority_clusters' must contain objects with 'name', 'priority' and optional 'max_threads'.")
+                throw [System.Exception]::new("Configuration key 'priority_clusters' must contain objects with 'cluster' and 'priority'.")
             }
 
             $clusterName = ''
-            if ($null -ne $item.name) {
-                $clusterName = ([string]$item.name).Trim()
+            if ($null -ne $item.cluster) {
+                $clusterName = ([string]$item.cluster).Trim()
             }
             if ([string]::IsNullOrWhiteSpace($clusterName)) {
-                throw [System.Exception]::new("Configuration key 'priority_clusters' contains an entry without a non-empty 'name'.")
+                throw [System.Exception]::new("Configuration key 'priority_clusters' contains an entry without a non-empty 'cluster'.")
             }
 
             $clusterKey = $clusterName.ToLowerInvariant()
@@ -656,26 +657,144 @@ function Import-NarvikConfig {
                 throw [System.Exception]::new("Configuration key 'priority_clusters' contains priority $priority for cluster '$clusterName'; it must be between -100 and 100.")
             }
 
-            $maxThreads = 1000
-            if ($null -ne $item.max_threads) {
-                $maxThreadsText = ([string]$item.max_threads).Trim()
-                if ($maxThreadsText -notmatch '^[0-9]+$') {
-                    throw [System.Exception]::new("Configuration key 'priority_clusters' contains a non-integer max_threads for cluster '$clusterName'.")
-                }
-                try {
-                    $maxThreads = [int]$maxThreadsText
-                }
-                catch {
-                    throw [System.Exception]::new("Configuration key 'priority_clusters' contains max_threads outside the supported integer range for cluster '$clusterName'.")
-                }
-                if ($maxThreads -lt 1) {
-                    throw [System.Exception]::new("Configuration key 'priority_clusters' contains max_threads $maxThreads for cluster '$clusterName'; it must be at least 1.")
-                }
+            $priorityClusters[$clusterKey] = [pscustomobject]@{
+                cluster  = $clusterName
+                priority = $priority
+            }
+        }
+    }
+
+    # Per-resource-pool backup priority, keyed by the cluster that owns the
+    # resource pool. The list is optional: resource pools that are not listed,
+    # and VMs outside a resource pool, keep priority 0.
+    $priorityResourcePools = @{}
+    $priorityResourcePoolsValue = Get-NarvikConfigValue -Config $config -Key 'priority_resource_pools'
+    if ($null -ne $priorityResourcePoolsValue) {
+        $priorityResourcePoolItems = @()
+        if ($priorityResourcePoolsValue -is [array]) {
+            $priorityResourcePoolItems = @($priorityResourcePoolsValue)
+        }
+        elseif (-not ($priorityResourcePoolsValue -is [string]) -and -not ($priorityResourcePoolsValue -is [ValueType])) {
+            # ConvertFrom-Json unwraps a JSON array with a single object, so a
+            # one-entry 'priority_resource_pools' list arrives here as one object.
+            $priorityResourcePoolItems = @($priorityResourcePoolsValue)
+        }
+        else {
+            throw [System.Exception]::new("Configuration key 'priority_resource_pools' must be an array of objects with 'cluster', 'resource_pool' and 'priority'.")
+        }
+        foreach ($item in $priorityResourcePoolItems) {
+            if ($null -eq $item -or $item -is [string] -or $item -is [array] -or $item -is [ValueType]) {
+                throw [System.Exception]::new("Configuration key 'priority_resource_pools' must contain objects with 'cluster', 'resource_pool' and 'priority'.")
             }
 
-            $priorityClusters[$clusterKey] = [pscustomobject]@{
-                name        = $clusterName
-                priority    = $priority
+            $clusterName = ''
+            if ($null -ne $item.cluster) {
+                $clusterName = ([string]$item.cluster).Trim()
+            }
+            if ([string]::IsNullOrWhiteSpace($clusterName)) {
+                throw [System.Exception]::new("Configuration key 'priority_resource_pools' contains an entry without a non-empty 'cluster'.")
+            }
+
+            $resourcePoolName = ''
+            if ($null -ne $item.resource_pool) {
+                $resourcePoolName = ([string]$item.resource_pool).Trim()
+            }
+            if ([string]::IsNullOrWhiteSpace($resourcePoolName)) {
+                throw [System.Exception]::new("Configuration key 'priority_resource_pools' contains an entry without a non-empty 'resource_pool' for cluster '$clusterName'.")
+            }
+
+            $clusterKey = $clusterName.ToLowerInvariant()
+            $resourcePoolKey = $resourcePoolName.ToLowerInvariant()
+            if (-not $priorityResourcePools.ContainsKey($clusterKey)) {
+                $priorityResourcePools[$clusterKey] = @{}
+            }
+            $clusterResourcePools = $priorityResourcePools[$clusterKey]
+            if ($clusterResourcePools.ContainsKey($resourcePoolKey)) {
+                throw [System.Exception]::new("Configuration key 'priority_resource_pools' contains resource pool '$resourcePoolName' in cluster '$clusterName' more than once.")
+            }
+
+            if ($null -eq $item.priority) {
+                throw [System.Exception]::new("Configuration key 'priority_resource_pools' requires a 'priority' for resource pool '$resourcePoolName' in cluster '$clusterName'.")
+            }
+            $priorityText = ([string]$item.priority).Trim()
+            if ($priorityText -notmatch '^-?[0-9]+$') {
+                throw [System.Exception]::new("Configuration key 'priority_resource_pools' contains a non-integer priority for resource pool '$resourcePoolName' in cluster '$clusterName'.")
+            }
+            $priority = 0
+            try {
+                $priority = [int]$priorityText
+            }
+            catch {
+                throw [System.Exception]::new("Configuration key 'priority_resource_pools' contains a priority outside the supported integer range for resource pool '$resourcePoolName' in cluster '$clusterName'.")
+            }
+            if ($priority -lt -100 -or $priority -gt 100) {
+                throw [System.Exception]::new("Configuration key 'priority_resource_pools' contains priority $priority for resource pool '$resourcePoolName' in cluster '$clusterName'; it must be between -100 and 100.")
+            }
+
+            $clusterResourcePools[$resourcePoolKey] = [pscustomobject]@{
+                cluster       = $clusterName
+                resource_pool = $resourcePoolName
+                priority      = $priority
+            }
+        }
+    }
+
+    # Per-cluster concurrency cap. The list is optional: clusters that are not
+    # listed keep max_threads 1000, which means no practical cap beyond the
+    # global one and the one-per-host rule.
+    $clusterMaxThreads = @{}
+    $clusterMaxThreadsValue = Get-NarvikConfigValue -Config $config -Key 'cluster_max_threads'
+    if ($null -ne $clusterMaxThreadsValue) {
+        $clusterMaxThreadItems = @()
+        if ($clusterMaxThreadsValue -is [array]) {
+            $clusterMaxThreadItems = @($clusterMaxThreadsValue)
+        }
+        elseif (-not ($clusterMaxThreadsValue -is [string]) -and -not ($clusterMaxThreadsValue -is [ValueType])) {
+            # ConvertFrom-Json unwraps a JSON array with a single object, so a
+            # one-entry 'cluster_max_threads' list arrives here as one object.
+            $clusterMaxThreadItems = @($clusterMaxThreadsValue)
+        }
+        else {
+            throw [System.Exception]::new("Configuration key 'cluster_max_threads' must be an array of objects with 'cluster' and 'max_threads'.")
+        }
+        foreach ($item in $clusterMaxThreadItems) {
+            if ($null -eq $item -or $item -is [string] -or $item -is [array] -or $item -is [ValueType]) {
+                throw [System.Exception]::new("Configuration key 'cluster_max_threads' must contain objects with 'cluster' and 'max_threads'.")
+            }
+
+            $clusterName = ''
+            if ($null -ne $item.cluster) {
+                $clusterName = ([string]$item.cluster).Trim()
+            }
+            if ([string]::IsNullOrWhiteSpace($clusterName)) {
+                throw [System.Exception]::new("Configuration key 'cluster_max_threads' contains an entry without a non-empty 'cluster'.")
+            }
+
+            $clusterKey = $clusterName.ToLowerInvariant()
+            if ($clusterMaxThreads.ContainsKey($clusterKey)) {
+                throw [System.Exception]::new("Configuration key 'cluster_max_threads' contains the cluster '$clusterName' more than once.")
+            }
+
+            if ($null -eq $item.max_threads) {
+                throw [System.Exception]::new("Configuration key 'cluster_max_threads' requires a 'max_threads' for cluster '$clusterName'.")
+            }
+            $maxThreadsText = ([string]$item.max_threads).Trim()
+            if ($maxThreadsText -notmatch '^[0-9]+$') {
+                throw [System.Exception]::new("Configuration key 'cluster_max_threads' contains a non-integer max_threads for cluster '$clusterName'.")
+            }
+            $maxThreads = 0
+            try {
+                $maxThreads = [int]$maxThreadsText
+            }
+            catch {
+                throw [System.Exception]::new("Configuration key 'cluster_max_threads' contains max_threads outside the supported integer range for cluster '$clusterName'.")
+            }
+            if ($maxThreads -lt 1) {
+                throw [System.Exception]::new("Configuration key 'cluster_max_threads' contains max_threads $maxThreads for cluster '$clusterName'; it must be at least 1.")
+            }
+
+            $clusterMaxThreads[$clusterKey] = [pscustomobject]@{
+                cluster     = $clusterName
                 max_threads = $maxThreads
             }
         }
@@ -764,6 +883,8 @@ function Import-NarvikConfig {
         dont_backup_by_snapshot_tag_name      = $dontBackupBySnapshotTagName
         datastore_cluster_to_management_class = $datastoreClusterToManagementClass
         priority_clusters                     = $priorityClusters
+        priority_resource_pools               = $priorityResourcePools
+        cluster_max_threads                   = $clusterMaxThreads
         smtp_server                           = $smtpServer
         smtp_port                             = $smtpPort
         smtp_use_ssl                          = $smtpUseSsl
@@ -1630,7 +1751,8 @@ function Get-NarvikMoRefValue {
 function Get-NarvikFolderPath {
     param(
         [string]$FolderId,
-        [hashtable]$FolderMap
+        [hashtable]$FolderMap,
+        [hashtable]$DatacenterMap = @{}
     )
 
     if ([string]::IsNullOrWhiteSpace($FolderId)) {
@@ -1641,15 +1763,30 @@ function Get-NarvikFolderPath {
     $seen = @{}
     $current = $FolderId
 
-    while (-not [string]::IsNullOrWhiteSpace($current) -and $FolderMap.ContainsKey($current) -and -not $seen.ContainsKey($current)) {
+    while (-not [string]::IsNullOrWhiteSpace($current) -and -not $seen.ContainsKey($current)) {
         $seen[$current] = $true
-        $folder = $FolderMap[$current]
-        $name = [string]$folder.Name
-        if (-not [string]::IsNullOrWhiteSpace($name) -and @('vm', 'Datacenters', 'VMs') -notcontains $name) {
-            $parts.Insert(0, $name)
+
+        if ($FolderMap.ContainsKey($current)) {
+            $folder = $FolderMap[$current]
+            $name = [string]$folder.Name
+            if (-not [string]::IsNullOrWhiteSpace($name) -and @('vm', 'Datacenters', 'VMs') -notcontains $name) {
+                $parts.Insert(0, $name)
+            }
+
+            $current = Get-NarvikMoRefValue -Object $folder.Parent
+            continue
         }
 
-        $current = Get-NarvikMoRefValue -Object $folder.Parent
+        # The VM folder tree stops at the datacenter. Include the datacenter
+        # name as the first component of the full path.
+        if ($DatacenterMap.ContainsKey($current)) {
+            $datacenterName = [string]$DatacenterMap[$current]
+            if (-not [string]::IsNullOrWhiteSpace($datacenterName)) {
+                $parts.Insert(0, $datacenterName)
+            }
+        }
+
+        break
     }
 
     return ($parts -join '/')
@@ -1820,6 +1957,8 @@ function Get-NarvikVCenterData {
         # and other folder types are never read.
         Write-NarvikLog -Level INFO -Message 'Collecting vCenter inventory: VM folders (Get-Folder -Type VM).'
         $folderObjects = @(Get-Folder -Type VM -ErrorAction Stop | Where-Object { $null -ne $_ })
+        Write-NarvikLog -Level INFO -Message 'Collecting vCenter inventory: datacenters (Get-Datacenter).'
+        $datacenterObjects = @(Get-Datacenter -ErrorAction Stop | Where-Object { $null -ne $_ })
         Write-NarvikLog -Level INFO -Message 'Collecting vCenter inventory: hosts (Get-VMHost).'
         $hostObjects = @(Get-VMHost -ErrorAction Stop | Where-Object { $null -ne $_ })
         Write-NarvikLog -Level INFO -Message 'Collecting vCenter inventory: resource pools (Get-ResourcePool).'
@@ -1954,6 +2093,11 @@ function Get-NarvikVCenterData {
             $folderMap[(Get-NarvikMoRefValue -Object $folder)] = $folder
         }
 
+        $datacenterMap = @{}
+        foreach ($datacenter in $datacenterObjects) {
+            $datacenterMap[(Get-NarvikMoRefValue -Object $datacenter)] = [string]$datacenter.Name
+        }
+
         $hostMap = @{}
         $hostParentMap = @{}
         foreach ($hostObject in $hostObjects) {
@@ -1982,21 +2126,155 @@ function Get-NarvikVCenterData {
             $environmentClusterNames[[string]$clusterObject.Name] = $true
         }
 
-        $unknownPriorityClusters = New-Object 'System.Collections.Generic.List[string]'
-        if ($null -ne $script:Config -and $null -ne $script:Config.priority_clusters) {
-            foreach ($clusterKey in @($script:Config.priority_clusters.Keys)) {
-                $configuredCluster = $script:Config.priority_clusters[$clusterKey]
-                $configuredName = [string]$configuredCluster.name
-                if ([string]::IsNullOrWhiteSpace($configuredName)) {
-                    continue
+        # Map each resource pool to the cluster that owns it, following parent
+        # resource pools when the pool is nested. The priority entries name the
+        # cluster explicitly, so a missing cluster and a missing resource pool
+        # are reported separately.
+        $resourcePoolParentMap = @{}
+        foreach ($resourcePool in $resourcePoolObjects) {
+            $resourcePoolParentMap[(Get-NarvikMoRefValue -Object $resourcePool)] = Get-NarvikMoRefValue -Object $resourcePool.ParentId
+        }
+
+        $resourcePoolsByCluster = @{}
+        foreach ($resourcePool in $resourcePoolObjects) {
+            $poolId = Get-NarvikMoRefValue -Object $resourcePool
+            $ownerClusterId = ''
+            $cursorId = $poolId
+            $guard = 0
+            while (-not [string]::IsNullOrWhiteSpace($cursorId) -and $guard -lt 100) {
+                $guard++
+                $parentId = ''
+                if ($resourcePoolParentMap.ContainsKey($cursorId)) {
+                    $parentId = [string]$resourcePoolParentMap[$cursorId]
                 }
-                if (-not $environmentClusterNames.ContainsKey($configuredName) -and -not $unknownPriorityClusters.Contains($configuredName)) {
-                    [void]$unknownPriorityClusters.Add($configuredName)
+                if ([string]::IsNullOrWhiteSpace($parentId)) {
+                    break
+                }
+                if ($clusterNames.ContainsKey($parentId)) {
+                    $ownerClusterId = $parentId
+                    break
+                }
+                if (-not $resourcePoolParentMap.ContainsKey($parentId)) {
+                    break
+                }
+                $cursorId = $parentId
+            }
+
+            if ([string]::IsNullOrWhiteSpace($ownerClusterId)) {
+                continue
+            }
+
+            $ownerClusterName = [string]$clusterNames[$ownerClusterId]
+            $ownerClusterKey = $ownerClusterName.ToLowerInvariant()
+            if (-not $resourcePoolsByCluster.ContainsKey($ownerClusterKey)) {
+                $resourcePoolsByCluster[$ownerClusterKey] = @{}
+            }
+            $resourcePoolsByCluster[$ownerClusterKey][([string]$resourcePool.Name).ToLowerInvariant()] = $true
+        }
+
+        # Configured names that do not exist are not a collection failure: the
+        # entry simply does not apply, is logged here and reported by email.
+        $unknownPriorityEntries = New-Object 'System.Collections.Generic.List[object]'
+        $unknownPriorityKeys = @{}
+        if ($null -ne $script:Config) {
+            if ($null -ne $script:Config.priority_clusters) {
+                foreach ($clusterKey in @($script:Config.priority_clusters.Keys)) {
+                    $configured = $script:Config.priority_clusters[$clusterKey]
+                    $configuredName = [string]$configured.cluster
+                    if ([string]::IsNullOrWhiteSpace($configuredName)) {
+                        continue
+                    }
+                    if ($environmentClusterNames.ContainsKey($configuredName)) {
+                        continue
+                    }
+
+                    $entryKey = 'priority_clusters|' + $configuredName.ToLowerInvariant()
+                    if ($unknownPriorityKeys.ContainsKey($entryKey)) {
+                        continue
+                    }
+                    $unknownPriorityKeys[$entryKey] = $true
+                    [void]$unknownPriorityEntries.Add([pscustomobject]@{
+                        Source       = 'priority_clusters'
+                        Cluster      = $configuredName
+                        ResourcePool = ''
+                        Key          = $entryKey
+                        Message      = "Cluster '$configuredName' from 'priority_clusters' was not found in the environment."
+                    })
+                }
+            }
+
+            if ($null -ne $script:Config.priority_resource_pools) {
+                foreach ($clusterKey in @($script:Config.priority_resource_pools.Keys)) {
+                    $clusterPools = $script:Config.priority_resource_pools[$clusterKey]
+                    foreach ($resourcePoolKey in @($clusterPools.Keys)) {
+                        $configured = $clusterPools[$resourcePoolKey]
+                        $configuredCluster = [string]$configured.cluster
+                        $configuredPool = [string]$configured.resource_pool
+                        if ([string]::IsNullOrWhiteSpace($configuredCluster) -or [string]::IsNullOrWhiteSpace($configuredPool)) {
+                            continue
+                        }
+
+                        $entryKey = 'priority_resource_pools|' + $configuredCluster.ToLowerInvariant() + '|' + $configuredPool.ToLowerInvariant()
+                        if ($unknownPriorityKeys.ContainsKey($entryKey)) {
+                            continue
+                        }
+
+                        if (-not $environmentClusterNames.ContainsKey($configuredCluster)) {
+                            $unknownPriorityKeys[$entryKey] = $true
+                            [void]$unknownPriorityEntries.Add([pscustomobject]@{
+                                Source       = 'priority_resource_pools'
+                                Cluster      = $configuredCluster
+                                ResourcePool = $configuredPool
+                                Key          = $entryKey
+                                Message      = "Cluster '$configuredCluster' from 'priority_resource_pools' was not found in the environment."
+                            })
+                            continue
+                        }
+
+                        $clusterKeyForPool = $configuredCluster.ToLowerInvariant()
+                        if (-not $resourcePoolsByCluster.ContainsKey($clusterKeyForPool) -or -not $resourcePoolsByCluster[$clusterKeyForPool].ContainsKey($configuredPool.ToLowerInvariant())) {
+                            $unknownPriorityKeys[$entryKey] = $true
+                            [void]$unknownPriorityEntries.Add([pscustomobject]@{
+                                Source       = 'priority_resource_pools'
+                                Cluster      = $configuredCluster
+                                ResourcePool = $configuredPool
+                                Key          = $entryKey
+                                Message      = "Resource pool '$configuredPool' in cluster '$configuredCluster' from 'priority_resource_pools' was not found in the environment."
+                            })
+                        }
+                    }
+                }
+            }
+
+            if ($null -ne $script:Config.cluster_max_threads) {
+                foreach ($clusterKey in @($script:Config.cluster_max_threads.Keys)) {
+                    $configured = $script:Config.cluster_max_threads[$clusterKey]
+                    $configuredName = [string]$configured.cluster
+                    if ([string]::IsNullOrWhiteSpace($configuredName)) {
+                        continue
+                    }
+                    if ($environmentClusterNames.ContainsKey($configuredName)) {
+                        continue
+                    }
+
+                    $entryKey = 'cluster_max_threads|' + $configuredName.ToLowerInvariant()
+                    if ($unknownPriorityKeys.ContainsKey($entryKey)) {
+                        continue
+                    }
+                    $unknownPriorityKeys[$entryKey] = $true
+                    [void]$unknownPriorityEntries.Add([pscustomobject]@{
+                        Source       = 'cluster_max_threads'
+                        Cluster      = $configuredName
+                        ResourcePool = ''
+                        Key          = $entryKey
+                        Message      = "Cluster '$configuredName' from 'cluster_max_threads' was not found in the environment."
+                    })
                 }
             }
         }
-        foreach ($unknownCluster in $unknownPriorityClusters) {
-            Write-NarvikLog -Level WARNING -Message "Cluster '$unknownCluster' from 'priority_clusters' was not found in the environment."
+
+        foreach ($unknownEntry in $unknownPriorityEntries) {
+            Write-NarvikLog -Level WARNING -Message ([string]$unknownEntry.Message)
         }
 
         $podByDatastore = @{}
@@ -2167,7 +2445,7 @@ function Get-NarvikVCenterData {
             $folderPath = ''
             if (-not [string]::IsNullOrWhiteSpace($folderId)) {
                 if (-not $folderPathCache.ContainsKey($folderId)) {
-                    $folderPathCache[$folderId] = Get-NarvikFolderPath -FolderId $folderId -FolderMap $folderMap
+                    $folderPathCache[$folderId] = Get-NarvikFolderPath -FolderId $folderId -FolderMap $folderMap -DatacenterMap $datacenterMap
                 }
                 $folderPath = [string]$folderPathCache[$folderId]
             }
@@ -2372,6 +2650,7 @@ function Get-NarvikVCenterData {
             }
 
             $priorityClusterSetting = Get-NarvikPriorityClusterSetting -ClusterName $hostClusterName
+            $resourcePoolPriority = Get-NarvikPriorityResourcePoolSetting -ClusterName $hostClusterName -ResourcePoolName $resourcePoolName
 
             [void]$vms.Add([pscustomobject]@{
                 Name              = $vmName
@@ -2384,9 +2663,9 @@ function Get-NarvikVCenterData {
                 ClusterName       = $hostClusterName
                 ClusterTags       = $clusterTags
                 ClusterPriority   = [int]$priorityClusterSetting.Priority
-                ClusterMaxThreads = [int]$priorityClusterSetting.MaxThreads
                 ResourcePoolMoRef = $resourcePoolId
                 ResourcePoolName  = $resourcePoolName
+                ResourcePoolPriority = [int]$resourcePoolPriority
                 ResourcePoolTags  = $resourcePoolTags
                 HostMoRef         = $hostId
                 HostName          = $hostName
@@ -2420,7 +2699,7 @@ function Get-NarvikVCenterData {
             DatastoreClusters    = @($datastoreClusters)
             TagRuleName          = $tagRuleName
             TagDataAvailable     = [bool]$tagDataAvailable
-            UnknownPriorityClusters = @($unknownPriorityClusters)
+            UnknownPriorityEntries = $unknownPriorityEntries.ToArray()
             VmCount              = $sortedVms.Count
             DatastoreCount       = $datastores.Count
             DatastoreClusterCount = $datastoreClusters.Count
@@ -2686,18 +2965,16 @@ function Get-NarvikPriorityClusterSetting {
     )
 
     # Clusters that are not listed in 'priority_clusters', and VMs whose host
-    # is not in a cluster, keep priority 0 and max_threads 1000: the global
-    # thread limit and the one-per-host rule still apply.
+    # is not in a cluster, keep priority 0.
     $displayName = ''
     if (-not [string]::IsNullOrWhiteSpace($ClusterName)) {
         $displayName = $ClusterName.Trim()
     }
 
     $setting = [pscustomobject]@{
-        Name       = $displayName
-        Priority   = 0
-        MaxThreads = 1000
-        Listed     = $false
+        Cluster  = $displayName
+        Priority = 0
+        Listed   = $false
     }
 
     if ([string]::IsNullOrWhiteSpace($displayName)) {
@@ -2716,11 +2993,70 @@ function Get-NarvikPriorityClusterSetting {
 
     $entry = $mapping[$key]
     return [pscustomobject]@{
-        Name       = [string]$entry.name
-        Priority   = [int]$entry.priority
-        MaxThreads = [int]$entry.max_threads
-        Listed     = $true
+        Cluster  = [string]$entry.cluster
+        Priority = [int]$entry.priority
+        Listed   = $true
     }
+}
+
+function Get-NarvikPriorityResourcePoolSetting {
+    param(
+        [AllowEmptyString()]
+        [string]$ClusterName,
+        [AllowEmptyString()]
+        [string]$ResourcePoolName
+    )
+
+    # VMs outside a resource pool, resource pools that are not listed in
+    # 'priority_resource_pools', and VMs whose host is not in a cluster keep
+    # priority 0.
+    if ([string]::IsNullOrWhiteSpace($ClusterName) -or [string]::IsNullOrWhiteSpace($ResourcePoolName)) {
+        return 0
+    }
+
+    if ($null -eq $script:Config -or $null -eq $script:Config.priority_resource_pools) {
+        return 0
+    }
+
+    $clusterKey = $ClusterName.Trim().ToLowerInvariant()
+    $resourcePoolKey = $ResourcePoolName.Trim().ToLowerInvariant()
+    $mapping = $script:Config.priority_resource_pools
+    if (-not $mapping.ContainsKey($clusterKey)) {
+        return 0
+    }
+
+    $clusterPools = $mapping[$clusterKey]
+    if (-not $clusterPools.ContainsKey($resourcePoolKey)) {
+        return 0
+    }
+
+    return [int]$clusterPools[$resourcePoolKey].priority
+}
+
+function Get-NarvikClusterMaxThreadsSetting {
+    param(
+        [AllowEmptyString()]
+        [string]$ClusterName
+    )
+
+    # Clusters that are not listed in 'cluster_max_threads' keep max_threads
+    # 1000, which means no practical cap beyond the global one and the
+    # one-per-host rule.
+    if ([string]::IsNullOrWhiteSpace($ClusterName)) {
+        return 1000
+    }
+
+    if ($null -eq $script:Config -or $null -eq $script:Config.cluster_max_threads) {
+        return 1000
+    }
+
+    $mapping = $script:Config.cluster_max_threads
+    $key = $ClusterName.Trim().ToLowerInvariant()
+    if (-not $mapping.ContainsKey($key)) {
+        return 1000
+    }
+
+    return [int]$mapping[$key].max_threads
 }
 
 function Update-NarvikEligibility {
@@ -2935,7 +3271,9 @@ function Update-NarvikEligibility {
     $finalEligible = @($initialEligible | Where-Object { -not $duplicateMorefs.ContainsKey([string]$_.MoRef) })
 
     # Sorted once here; the scheduler only filters pending VMs in this order.
-    $script:EligibleVMs = @($finalEligible | Sort-Object -Property @{ Expression = { [int]$_.ClusterPriority }; Descending = $true }, FolderPath, Name)
+    # Higher cluster priority comes first, then higher resource pool priority,
+    # then the full VM folder path (including the datacenter) and the name.
+    $script:EligibleVMs = @($finalEligible | Sort-Object -Property @{ Expression = { [int]$_.ClusterPriority }; Descending = $true }, @{ Expression = { [int]$_.ResourcePoolPriority }; Descending = $true }, FolderPath, Name)
     $script:NonEligibleVMs = @($nonEligible)
     $script:DuplicateNameCases = @($duplicateCases)
     $script:UnsupportedNameCases = @($unsupportedNameCases)
@@ -3279,30 +3617,32 @@ function Send-NarvikDiskSizeAlerts {
 }
 
 function Send-NarvikPriorityClusterAlerts {
-    $unknownClusters = @()
-    if ($null -ne $script:VCache -and $script:VCache.PSObject.Properties.Name -contains 'UnknownPriorityClusters') {
-        $unknownClusters = @($script:VCache.UnknownPriorityClusters)
+    $unknownEntries = @()
+    if ($null -ne $script:VCache -and $script:VCache.PSObject.Properties.Name -contains 'UnknownPriorityEntries') {
+        $unknownEntries = @($script:VCache.UnknownPriorityEntries)
     }
 
-    if ($unknownClusters.Count -eq 0) {
+    if ($unknownEntries.Count -eq 0) {
         return
     }
 
     if (-not (Test-NarvikMailEnabled)) {
-        Write-NarvikLog -Level DEBUG -Message 'SMTP server is not configured; priority cluster alert skipped.'
+        Write-NarvikLog -Level DEBUG -Message 'SMTP server is not configured; backup priority name alert skipped.'
         return
     }
 
     $now = Get-Date
-    $dueClusters = New-Object 'System.Collections.Generic.List[string]'
+    $dueEntries = New-Object 'System.Collections.Generic.List[object]'
 
-    foreach ($name in $unknownClusters) {
-        $clusterName = ([string]$name).Trim()
-        if ([string]::IsNullOrWhiteSpace($clusterName)) {
+    foreach ($entry in $unknownEntries) {
+        $key = ''
+        if ($null -ne $entry.PSObject.Properties['Key']) {
+            $key = [string]$entry.Key
+        }
+        if ([string]::IsNullOrWhiteSpace($key)) {
             continue
         }
 
-        $key = $clusterName.ToLowerInvariant()
         $lastAlert = $null
         if ($script:State.priority_cluster_alerts.ContainsKey($key)) {
             $lastAlert = $script:State.priority_cluster_alerts[$key]
@@ -3311,42 +3651,39 @@ function Send-NarvikPriorityClusterAlerts {
         if ($null -ne $lastAlert) {
             $ageHours = ($now - $lastAlert).TotalHours
             if ($ageHours -lt 24) {
-                Write-NarvikLog -Level INFO -Message "Cluster '$clusterName' from 'priority_clusters' was already reported at $($lastAlert.ToString('yyyy-MM-dd HH:mm:ss')); alert suppressed for 24 hours."
+                Write-NarvikLog -Level INFO -Message "Backup priority entry '$key' was already reported at $($lastAlert.ToString('yyyy-MM-dd HH:mm:ss')); alert suppressed for 24 hours."
                 continue
             }
         }
 
-        if (-not $dueClusters.Contains($clusterName)) {
-            [void]$dueClusters.Add($clusterName)
-        }
+        [void]$dueEntries.Add($entry)
     }
 
-    if ($dueClusters.Count -eq 0) {
+    if ($dueEntries.Count -eq 0) {
         return
     }
 
     $body = New-Object System.Text.StringBuilder
-    [void]$body.AppendLine("Narvik did not find the following cluster name(s) from 'priority_clusters' in vCenter.")
+    [void]$body.AppendLine('Narvik did not find the following names from the backup priority configuration in vCenter.')
     [void]$body.AppendLine('Their priority and max_threads settings are not being applied to any VM.')
-    [void]$body.AppendLine('Fix the name in config.json or remove the entry.')
+    [void]$body.AppendLine('Fix the names in config.json or remove the entries.')
     [void]$body.AppendLine('')
-    foreach ($clusterName in $dueClusters) {
-        [void]$body.AppendLine("Cluster: '$clusterName'")
+    foreach ($entry in $dueEntries) {
+        [void]$body.AppendLine('- ' + [string]$entry.Message)
     }
 
-    $subject = '[Narvik] Cluster names in priority_clusters not found in vCenter - action required'
+    $subject = '[Narvik] Names in the backup priority configuration not found in vCenter - action required'
     $sent = Send-NarvikMail -Subject $subject -Body $body.ToString()
 
     if ($sent) {
-        foreach ($clusterName in $dueClusters) {
-            $key = $clusterName.ToLowerInvariant()
-            $script:State.priority_cluster_alerts[$key] = $now
+        foreach ($entry in $dueEntries) {
+            $script:State.priority_cluster_alerts[[string]$entry.Key] = $now
         }
         Save-NarvikState
-        Write-NarvikLog -Level INFO -Message "Priority cluster alert sent for $($dueClusters.Count) cluster name(s)."
+        Write-NarvikLog -Level INFO -Message "Backup priority name alert sent for $($dueEntries.Count) entr(y/ies)."
     }
     else {
-        Write-NarvikLog -Level ERROR -Message 'Priority cluster alert could not be sent; it will be retried on the next inventory collection.'
+        Write-NarvikLog -Level ERROR -Message 'Backup priority name alert could not be sent; it will be retried on the next inventory collection.'
     }
 }
 
@@ -3505,15 +3842,7 @@ function Test-NarvikClusterAtCapacity {
         return $false
     }
 
-    $maxThreads = 1000
-    if ($Vm.PSObject.Properties.Name -contains 'ClusterMaxThreads') {
-        try {
-            $maxThreads = [int]$Vm.ClusterMaxThreads
-        }
-        catch {
-            $maxThreads = 1000
-        }
-    }
+    $maxThreads = Get-NarvikClusterMaxThreadsSetting -ClusterName $clusterName
     if ($maxThreads -lt 1) {
         $maxThreads = 1
     }
@@ -3598,7 +3927,7 @@ function Select-NarvikNextBackup {
             }
 
             if (Test-NarvikClusterAtCapacity -Vm $vm) {
-                Write-NarvikLog -Level DEBUG -Message "VM '$($vm.Name)' is in cluster '$($vm.ClusterName)', which already has $($vm.ClusterMaxThreads) active backup(s); skipping."
+                Write-NarvikLog -Level DEBUG -Message "VM '$($vm.Name)' is in cluster '$($vm.ClusterName)', which already has $(Get-NarvikClusterMaxThreadsSetting -ClusterName $vm.ClusterName) active backup(s); skipping."
                 continue
             }
 
@@ -3647,7 +3976,7 @@ function Select-NarvikNextBackup {
         }
 
         if (Test-NarvikClusterAtCapacity -Vm $vm) {
-            Write-NarvikLog -Level DEBUG -Message "VM '$($vm.Name)' is in cluster '$($vm.ClusterName)', which already has $($vm.ClusterMaxThreads) active backup(s); full backup skipped."
+            Write-NarvikLog -Level DEBUG -Message "VM '$($vm.Name)' is in cluster '$($vm.ClusterName)', which already has $(Get-NarvikClusterMaxThreadsSetting -ClusterName $vm.ClusterName) active backup(s); full backup skipped."
             continue
         }
 
@@ -3672,9 +4001,10 @@ function Select-NarvikNextBackup {
         return $null
     }
 
-    # Priority is the primary criterion for full backups too; the oldest full
-    # backup only breaks ties inside the same cluster priority.
-    $selected = @($fullCandidates | Sort-Object -Property @{ Expression = { [int]$_.VM.ClusterPriority }; Descending = $true }, LastFull, @{ Expression = { $_.VM.FolderPath } }, @{ Expression = { $_.VM.Name } } | Select-Object -First 1)[0]
+    # Priority is the primary criterion for full backups too; resource pool
+    # priority comes next and the oldest full backup breaks ties before the
+    # folder path and the name.
+    $selected = @($fullCandidates | Sort-Object -Property @{ Expression = { [int]$_.VM.ClusterPriority }; Descending = $true }, @{ Expression = { [int]$_.VM.ResourcePoolPriority }; Descending = $true }, LastFull, @{ Expression = { $_.VM.FolderPath } }, @{ Expression = { $_.VM.Name } } | Select-Object -First 1)[0]
 
     return [pscustomobject]@{
         VM        = $selected.VM
@@ -4079,6 +4409,7 @@ function Start-NarvikBackupJob {
         HostName        = [string]$vm.HostName
         ClusterName     = [string]$vm.ClusterName
         ClusterPriority = [int]$vm.ClusterPriority
+        ResourcePoolPriority = [int]$vm.ResourcePoolPriority
         Mode            = $modeText
         IsFull          = [bool]$isFull
         Process         = $process
@@ -4398,7 +4729,7 @@ function Invoke-NarvikIdleMaintenance {
     Write-NarvikLog -Level INFO -Message 'Idle maintenance started: no backup will be started in this cycle.'
 
     Write-NarvikLog -Level INFO -Message "Eligible VMs: $(@($script:EligibleVMs).Count)."
-    foreach ($vm in @($script:EligibleVMs | Sort-Object -Property @{ Expression = { [int]$_.ClusterPriority }; Descending = $true }, FolderPath, Name)) {
+    foreach ($vm in @($script:EligibleVMs | Sort-Object -Property @{ Expression = { [int]$_.ClusterPriority }; Descending = $true }, @{ Expression = { [int]$_.ResourcePoolPriority }; Descending = $true }, FolderPath, Name)) {
         $lastBackupText = 'never'
         if ($null -ne $vm.LastBackup) {
             $lastBackupText = $vm.LastBackup.ToString('yyyy-MM-dd HH:mm:ss')
@@ -4407,7 +4738,7 @@ function Invoke-NarvikIdleMaintenance {
         if ($script:LastFull.ContainsKey($vm.Name)) {
             $lastFullText = $script:LastFull[$vm.Name].ToString('yyyy-MM-dd HH:mm:ss')
         }
-        Write-NarvikLog -Level INFO -Message "Eligible VM '$($vm.Name)': folder '$($vm.FolderPath)', host '$($vm.HostName)', cluster '$($vm.ClusterName)' (priority $($vm.ClusterPriority), max_threads $($vm.ClusterMaxThreads)), size $($vm.TotalSizeGB) GB, last incremental $lastBackupText, last full $lastFullText."
+        Write-NarvikLog -Level INFO -Message "Eligible VM '$($vm.Name)': folder '$($vm.FolderPath)', host '$($vm.HostName)', cluster '$($vm.ClusterName)' (priority $($vm.ClusterPriority), max_threads $(Get-NarvikClusterMaxThreadsSetting -ClusterName $vm.ClusterName)), resource pool '$($vm.ResourcePoolName)' (priority $($vm.ResourcePoolPriority)), size $($vm.TotalSizeGB) GB, last incremental $lastBackupText, last full $lastFullText."
     }
 
     Write-NarvikLog -Level INFO -Message "Non-eligible VMs: $(@($script:NonEligibleVMs).Count)."
