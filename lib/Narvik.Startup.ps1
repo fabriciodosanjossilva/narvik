@@ -122,22 +122,74 @@ function Close-NarvikLogWriter {
     }
 }
 
-function Initialize-NarvikDirectories {
+function Set-NarvikDirectoryPaths {
+    # Only computes the paths. The folders are created by the step that uses them.
     $script:ControlDir = Join-Path $script:RootPath 'control'
     $script:LogDir = Join-Path $script:RootPath 'log/narvik'
     $script:VmLogDir = Join-Path $script:RootPath 'log/vm'
     $script:MonitoringDir = Join-Path $script:RootPath 'monitoring'
-
-    New-Item -ItemType Directory -Force -Path $script:ControlDir | Out-Null
-    New-Item -ItemType Directory -Force -Path $script:LogDir | Out-Null
-    New-Item -ItemType Directory -Force -Path (Join-Path $script:LogDir 'old') | Out-Null
-    New-Item -ItemType Directory -Force -Path $script:VmLogDir | Out-Null
-    New-Item -ItemType Directory -Force -Path $script:MonitoringDir | Out-Null
 }
 
-function Acquire-NarvikProcessLock {
+function Test-NarvikProcessLockFree {
+    # Read-only: runs before the log is open, so it writes no log lines and creates
+    # no folders. A missing control folder or file, or an invalid file, means no lock.
+    $processFile = Join-Path $script:ControlDir 'process.txt'
+    if (-not (Test-Path -LiteralPath $processFile -PathType Leaf)) {
+        return
+    }
+
+    try {
+        $existing = Get-Content -LiteralPath $processFile -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        if ($null -eq $existing -or $null -eq $existing.pid) {
+            return
+        }
+
+        $existingPid = [int]$existing.pid
+        $existingName = [string]$existing.name
+        $existingStart = $null
+        if ($null -ne $existing.started_at) {
+            $existingStart = ConvertFrom-NarvikIsoDate -Value ([string]$existing.started_at)
+        }
+
+        $alive = Get-Process -Id $existingPid -ErrorAction SilentlyContinue
+        if ($null -eq $alive) {
+            return
+        }
+
+        $nameMatches = ($alive.ProcessName -ieq $existingName)
+        $startMatches = $true
+        if ($null -ne $existingStart) {
+            try {
+                $startMatches = ([math]::Abs(($alive.StartTime - $existingStart).TotalSeconds) -lt 5)
+            }
+            catch {
+                $startMatches = $true
+            }
+        }
+
+        if ($nameMatches -and $startMatches) {
+            Throw-NarvikFatal -Message "Another Narvik instance is already running with PID $existingPid and executable '$existingName'." -Code 3
+        }
+    }
+    catch [System.Exception] {
+        if ($_.Exception.Message -like 'Another Narvik instance*') {
+            throw
+        }
+        # Invalid control file: it is replaced by Write-NarvikProcessLock.
+    }
+}
+
+function Write-NarvikProcessLock {
+    # Runs after the log is open. The control folder is created here, not earlier.
     $processFile = Join-Path $script:ControlDir 'process.txt'
     $script:ProcessLockFile = $processFile
+
+    try {
+        New-Item -ItemType Directory -Force -Path $script:ControlDir -ErrorAction Stop | Out-Null
+    }
+    catch {
+        Throw-NarvikFatal -Message "Cannot create control directory '$($script:ControlDir)': $($_.Exception.Message)" -Code 1
+    }
 
     $currentProcess = [System.Diagnostics.Process]::GetCurrentProcess()
     $currentName = $currentProcess.ProcessName
@@ -151,50 +203,15 @@ function Acquire-NarvikProcessLock {
     $json = $processInfo | ConvertTo-Json -Depth 5
 
     if (Test-Path -LiteralPath $processFile -PathType Leaf) {
-        $stale = $true
+        # Checked again, because another instance may have started since the check
+        # before the log was opened. Whatever is left is stale or invalid.
+        Test-NarvikProcessLockFree
+        Write-NarvikLog -Level INFO -Message "Replacing stale or invalid process control file '$processFile'."
         try {
-            $existing = Get-Content -LiteralPath $processFile -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
-            if ($null -ne $existing -and $null -ne $existing.pid) {
-                $existingPid = [int]$existing.pid
-                $existingName = [string]$existing.name
-                $existingStart = $null
-                if ($null -ne $existing.started_at) {
-                    $existingStart = ConvertFrom-NarvikIsoDate -Value ([string]$existing.started_at)
-                }
-
-                $alive = Get-Process -Id $existingPid -ErrorAction SilentlyContinue
-                if ($null -ne $alive) {
-                    $nameMatches = ($alive.ProcessName -ieq $existingName)
-                    $startMatches = $true
-                    if ($null -ne $existingStart) {
-                        try {
-                            $startMatches = ([math]::Abs(($alive.StartTime - $existingStart).TotalSeconds) -lt 5)
-                        }
-                        catch {
-                            $startMatches = $true
-                        }
-                    }
-
-                    if ($nameMatches -and $startMatches) {
-                        Throw-NarvikFatal -Message "Another Narvik instance is already running with PID $existingPid and executable '$existingName'." -Code 3
-                    }
-                }
-            }
+            Remove-Item -LiteralPath $processFile -Force -ErrorAction Stop
         }
-        catch [System.Exception] {
-            if ($_.Exception.Message -like 'Another Narvik instance*') {
-                throw
-            }
-            Write-NarvikLog -Level WARNING -Message "Existing process control file '$processFile' is invalid and will be replaced."
-        }
-
-        if ($stale) {
-            try {
-                Remove-Item -LiteralPath $processFile -Force -ErrorAction Stop
-            }
-            catch {
-                Throw-NarvikFatal -Message "Cannot remove stale process control file '$processFile': $($_.Exception.Message)" -Code 1
-            }
+        catch {
+            Throw-NarvikFatal -Message "Cannot remove stale process control file '$processFile': $($_.Exception.Message)" -Code 1
         }
     }
 
@@ -260,13 +277,10 @@ function Initialize-Narvik {
         Throw-NarvikFatal -Message "Invalid root directory '$rootValue': $($_.Exception.Message)" -Code 1
     }
 
+    # The root must already exist: it is never created here. Nothing below it is created
+    # until the step that needs it (see the order notes further down).
     if (-not (Test-Path -LiteralPath $script:RootPath -PathType Container)) {
-        try {
-            New-Item -ItemType Directory -Force -Path $script:RootPath -ErrorAction Stop | Out-Null
-        }
-        catch {
-            Throw-NarvikFatal -Message "Cannot create root directory '$($script:RootPath)': $($_.Exception.Message)" -Code 1
-        }
+        Throw-NarvikFatal -Message "Root directory '$($script:RootPath)' does not exist." -Code 1
     }
 
     try {
@@ -278,19 +292,33 @@ function Initialize-Narvik {
         Throw-NarvikFatal -Message "Root directory '$($script:RootPath)' is not writable: $($_.Exception.Message)" -Code 1
     }
 
-    Initialize-NarvikDirectories
-    Acquire-NarvikProcessLock
+    Set-NarvikDirectoryPaths
+
+    # Read-only part of the single-instance check. It runs before the log is opened,
+    # because opening the log rotates the existing log.txt of a running instance.
+    Test-NarvikProcessLockFree
 
     # The configuration is read before the log is opened: an invalid configuration
     # is a fatal error reported on stdout, and it must not rotate the existing log.
     # Until the log is open, Write-NarvikLog keeps writing to stdout and buffers the lines.
     Update-NarvikRuntimeConfig
 
+    # Creates log/narvik and log/narvik/old (log/vm is created by the first backup).
     Initialize-NarvikLog
+
+    # Creates control/ and writes the lock file.
+    Write-NarvikProcessLock
 
     Load-NarvikState
     Load-NarvikLastFull
     Load-NarvikIndependentDisks
+
+    try {
+        New-Item -ItemType Directory -Force -Path $script:MonitoringDir -ErrorAction Stop | Out-Null
+    }
+    catch {
+        Throw-NarvikFatal -Message "Cannot create monitoring directory '$($script:MonitoringDir)': $($_.Exception.Message)" -Code 1
+    }
 
     if ($script:Config.check_administrator_privilege) {
         if (-not (Test-NarvikIsAdministrator)) {

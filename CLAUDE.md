@@ -39,9 +39,11 @@ is the spec.
   declared `Mandatory` in the param block on purpose — a missing value must go through
   the normal fatal-error/stdout path (`Throw-NarvikFatal`), not PowerShell's interactive
   prompt.
-- The root directory is where Narvik creates its runtime layout: `control/` (process
-  lock), `log/narvik/` (main log + daily-rotated `old/` subfolders), `log/vm/` (one log
-  per VM backup), `monitoring/` (status files for external tooling), plus `config.json`
+- The root directory must already exist; Narvik never creates it. Below it Narvik creates
+  its runtime layout, each folder only when its step runs: `log/narvik/` (main log +
+  daily-rotated `old/` subfolders) when the log opens, `control/` (process lock) after the
+  log is open, `log/vm/` (one log per VM backup) on the first backup, and `monitoring/`
+  (status files for external tooling) after the state is loaded. Plus `config.json`
   and password files (`vcenter_password.txt`, SMTP password file) read from that same
   root. `config.example.json` at the repo root is a template for that `config.json`, not
   something the script reads directly.
@@ -133,14 +135,17 @@ and monitoring (`Narvik.Backup.ps1`), and the daemon's main loop
 these files.
 
 Startup/shutdown:
-- `Initialize-Narvik`: resolves and validates `RootPath`, sets up directories, acquires
-  a single-instance process lock (`Acquire-NarvikProcessLock` — a second instance in the
-  same root is refused), reads and validates config (`Update-NarvikRuntimeConfig`, before
-  the log exists: an invalid config is fatal on stdout and does not rotate the old log),
-  opens the log (`Initialize-NarvikLog`, which copies the stdout lines buffered in
-  `$script:StartupLog` into it), loads persisted state
-  (`Load-NarvikState`/`Load-NarvikLastFull`/`Load-NarvikIndependentDisks`), checks
-  administrator privilege if configured, and imports PowerCLI.
+- `Initialize-Narvik`: resolves and validates `RootPath` (must exist; not created), sets the
+  directory paths (`Set-NarvikDirectoryPaths`, no folders created), runs the read-only part
+  of the single-instance check (`Test-NarvikProcessLockFree`, before the log so a second
+  instance cannot rotate the running instance's log), reads and validates config
+  (`Update-NarvikRuntimeConfig`, before the log exists: an invalid config is fatal on stdout
+  and does not rotate the old log), opens the log (`Initialize-NarvikLog`, which creates
+  `log/narvik/` and `old/` and copies the stdout lines buffered in `$script:StartupLog` into
+  it), creates `control/` and writes the lock (`Write-NarvikProcessLock`, a second instance
+  is refused), loads persisted state (`Load-NarvikState`/`Load-NarvikLastFull`/
+  `Load-NarvikIndependentDisks`), creates `monitoring/`, checks administrator privilege if
+  configured, and imports PowerCLI.
 - `Invoke-NarvikMain`: the daemon's `while ($true)` loop, polling every 10 seconds. Each
   iteration: handle control files → reload config
   (`Update-NarvikRuntimeConfig`, re-read every cycle; an invalid reload keeps the last
