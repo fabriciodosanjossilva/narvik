@@ -59,6 +59,66 @@ is the spec.
   to dsmc so nothing is actually backed up — safe default for trying the daemon against
   a real vCenter.
 
+## Testing against a real vCenter
+
+**The vCenter reachable from the development machine is PRODUCTION. Do not change anything
+on it.** No VM, datastore, tag, folder, resource pool, note, permission, power state or
+configuration may be created, modified, moved or deleted, not even temporarily. Use only
+read calls (`Get-*`, `Get-View` without side effects, `Get-TagAssignment`, `Connect-VIServer`
+and `Disconnect-VIServer`). Do not run `Set-*`, `New-*`, `Remove-*`, `Move-*`, `Start-*`,
+`Stop-*`, `Restart-*`, `Invoke-*`, `Set-PowerCLIConfiguration` with side effects on the
+server, or any `dsmc` backup against it. This includes `dsmc_fake.ps1`: when
+`DSMC_FAKE_RUNTIME_ROOT` is set it writes the `<Last Backup (IBM Spectrum Protect)>` block
+into VM Notes on the vCenter, so never run the daemon with `dsmc_path` pointing at it
+against this vCenter. Run the daemon end to end only against a non-production vCenter.
+
+Read-only probes and before/after comparisons against a real vCenter work from the
+development machine. Use placeholders below (`<runtime-root>`, `<vcenter-host>`,
+`<user>`); never write real hostnames, users or passwords into the repo.
+
+- The runtime root (`<runtime-root>`, outside the repo) holds `config.json` and the
+  password file named by `vcenter_password_file`. Read `vcenter_server`,
+  `vcenter_port` and `vcenter_user` from `config.json`. Read the password file's trimmed
+  contents into memory only; never print or log it.
+- Connection, as the code does it (PowerCLI 13.x):
+  `Import-Module VMware.VimAutomation.Core`,
+  `Set-PowerCLIConfiguration -Scope Session -InvalidCertificateAction Fail -Confirm:$false`,
+  then `New-Object PSCredential(user, ConvertTo-SecureString $pw -AsPlainText -Force)` and
+  `Connect-VIServer -Server ... -Port ... -Credential ...`. Finish with
+  `Disconnect-VIServer -Server * -Confirm:$false`.
+- Run probes from a script file under `$env:TEMP`, with `powershell -NoProfile
+  -ExecutionPolicy Bypass -File <script>`. Keep probe scripts out of the repo. Piping a
+  here-doc into `powershell -Command -` silently produced no output in some runs, so do
+  not rely on it.
+- Before/after comparison of an inventory change: dot-source `lib/Narvik.*.ps1` in the
+  same order as `Narvik.ps1`, set `$script:RootPath`, `$script:Config`
+  (`Import-NarvikConfig -Path <runtime-root>\config.json`), `$script:LogLevel = 'DEBUG'`,
+  and stub `Save-NarvikLastFull` and `Write-NarvikMonitoringFiles` as no-ops so nothing
+  is written to the runtime root. Then call `Get-NarvikVCenterData`, set
+  `$script:VCache` to its result, call `Update-NarvikEligibility`, and dump VMs, disks,
+  `$script:EligibleVMs` and `$script:NonEligibleVMs` to JSON. Diff the two dumps.
+  Expect differences in live fields (`HostName` after vMotion, `Notes`/`LastBackup`
+  after a backup) that are unrelated to the change; eligibility should match.
+- Reference measurements (1,609 VMs, 39 templates, 7,443 disks, 1,080 VM folders,
+  135 datastores, 38 datastore clusters): `Get-VM` ~1 s, `Get-HardDisk -VM` ~3–6 s,
+  `Get-TagAssignment` per entity type ~0.2–0.5 s, whole `Get-NarvikVCenterData` ~42 s
+  after the batched reads below (it was ~90–105 s before).
+
+Performance rule learned from measurement: a property read through `.ExtensionData`,
+or a navigation property such as a folder's `.Parent`, is loaded lazily, with one vCenter
+round trip per object (~35–40 ms each here). Inside an inventory loop that costs
+minutes. Prefer:
+- the `*Id` properties that PowerCLI already has (`Folder.ParentId`, `FolderId`,
+  `ResourcePoolId`, `VMHostId`), which are read without a round trip;
+- one `Get-View -ViewType <Type> -Property <paths>` call for everything else, indexed by
+  `MoRef.Value`. Always include an always-set property such as `Config.Name` alongside
+  `Config.ManagedBy`/`Config.Annotation`. Without it, vCenter omits the `config` object
+  for VMs with neither ManagedBy nor Annotation, and `Config` comes back `$null`.
+
+Measure a change with the `DEBUG` timing lines already in `Get-NarvikVCenterData`
+(`VM candidates read`, `VM processing finished`, `vCenter inventory collection total`)
+before and after.
+
 ## Architecture
 
 Functions are named `Verb-NarvikNoun` (all prefixed `Narvik`) and split across `lib/` by

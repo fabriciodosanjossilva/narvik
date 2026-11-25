@@ -99,7 +99,10 @@ function Get-NarvikFolderPath {
                 $parts.Insert(0, $name)
             }
 
-            $current = Get-NarvikMoRefValue -Object $folder.Parent
+            # ParentId is the plain identifier of the parent. Reading Parent returns
+            # the parent object, which PowerCLI loads lazily (one vCenter round trip
+            # per folder); both give the same MoRef.
+            $current = Get-NarvikMoRefValue -Object ([string]$folder.ParentId)
             continue
         }
 
@@ -645,15 +648,43 @@ function Get-NarvikVCenterData {
         }
         Write-NarvikLog -Level DEBUG -Message "Host, cluster and resource pool maps built in $($postTagTimer.ElapsedMilliseconds) ms since tag collection."
 
+        # Datastore name -> MoRef. Disks name their datastore in Filename
+        # ('[name] folder/disk.vmdk'), so this map resolves it without reading
+        # each disk's backing. A name shared by two datastores is ambiguous and
+        # resolves to nothing, so its disks are reported as unknown datastores.
+        $datastoreIdByName = @{}
+        $ambiguousDatastoreNames = @{}
+        foreach ($datastore in $datastoreObjects) {
+            $datastoreName = [string]$datastore.Name
+            $datastoreIdValue = Get-NarvikMoRefValue -Object $datastore
+            if ($datastoreIdByName.ContainsKey($datastoreName) -and $datastoreIdByName[$datastoreName] -ne $datastoreIdValue) {
+                if (-not $ambiguousDatastoreNames.ContainsKey($datastoreName)) {
+                    $ambiguousDatastoreNames[$datastoreName] = $true
+                    Write-NarvikLog -Level WARNING -Message "Datastore name '$datastoreName' is used by more than one datastore; disks on it are treated as unknown datastore."
+                }
+                $datastoreIdByName[$datastoreName] = ''
+            }
+            else {
+                $datastoreIdByName[$datastoreName] = $datastoreIdValue
+            }
+        }
+
+        # One batched read for all datastore clusters: their member datastores.
+        # Replaces one ExtensionData round trip per cluster.
+        $podChildren = @{}
+        if ($datastoreClusterObjects.Count -gt 0) {
+            foreach ($podView in @(Get-View -ViewType StoragePod -Property ChildEntity -ErrorAction Stop)) {
+                $podChildren[[string]$podView.MoRef.Value] = @($podView.ChildEntity | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_.Value })
+            }
+        }
+
         $podByDatastore = @{}
         foreach ($pod in $datastoreClusterObjects) {
             $podId = Get-NarvikMoRefValue -Object $pod
-            foreach ($child in @($pod.ExtensionData.ChildEntity)) {
-                if ($null -ne $child) {
-                    $podByDatastore[[string]$child.Value] = [pscustomobject]@{
-                        Name  = [string]$pod.Name
-                        MoRef = $podId
-                    }
+            foreach ($childId in @($podChildren[$podId] | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+                $podByDatastore[$childId] = [pscustomobject]@{
+                    Name  = [string]$pod.Name
+                    MoRef = $podId
                 }
             }
         }
@@ -676,16 +707,16 @@ function Get-NarvikVCenterData {
         $datastoreClusters = [System.Collections.Generic.List[object]]::new()
         foreach ($pod in $datastoreClusterObjects) {
             $memberNames = New-Object 'System.Collections.Generic.List[string]'
-            foreach ($child in @($pod.ExtensionData.ChildEntity)) {
-                if ($null -ne $child -and $datastoreMap.ContainsKey([string]$child.Value)) {
-                    $member = $datastoreMap[[string]$child.Value]
+            $podId = Get-NarvikMoRefValue -Object $pod
+            foreach ($childId in @($podChildren[$podId] | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+                if ($datastoreMap.ContainsKey($childId)) {
+                    $member = $datastoreMap[$childId]
                     if ($member.Type -eq 'VMFS') {
                         [void]$memberNames.Add([string]$member.Name)
                     }
                 }
             }
 
-            $podId = Get-NarvikMoRefValue -Object $pod
             $podTags = @()
             if ($taggedMoRefs.Contains($podId)) {
                 $podTags = @($tagRuleName)
@@ -700,18 +731,27 @@ function Get-NarvikVCenterData {
         }
 
         Write-NarvikLog -Level DEBUG -Message "Datastore clusters mapped in $($postTagTimer.ElapsedMilliseconds) ms since tag collection ($($datastoreClusterObjects.Count) cluster(s))."
+        # One batched read for every VM and template (Get-View returns both): the
+        # placeholder flag (Config.ManagedBy), the template Notes (Config.Annotation)
+        # and the template resource pool. Replaces one ExtensionData round trip per
+        # object, which was the slow part of the inventory.
+        # Config.Name is always set, so vCenter always returns the config object.
+        # Without it, a VM with no ManagedBy and no Annotation comes back with
+        # Config = null (it was skipped as "no configuration data").
+        $viewTimer = [System.Diagnostics.Stopwatch]::StartNew()
+        $vmViews = @{}
+        foreach ($view in @(Get-View -ViewType VirtualMachine -Property 'Name', 'Config.Name', 'Config.ManagedBy', 'Config.Annotation', 'ResourcePool' -ErrorAction Stop)) {
+            $vmViews[[string]$view.MoRef.Value] = $view
+        }
+        Write-NarvikLog -Level DEBUG -Message "Get-View (VirtualMachine) returned $($vmViews.Count) view(s) in $($viewTimer.ElapsedMilliseconds) ms."
+
         $vmCandidates = [System.Collections.Generic.List[object]]::new()
         $candidateTimer = [System.Diagnostics.Stopwatch]::StartNew()
         foreach ($vm in $vmObjects) {
             $vmId = Get-NarvikMoRefValue -Object $vm
             $config = $null
-            try {
-                # ExtensionData triggers one vCenter round trip per VM: this loop
-                # is the first place where that cost is paid for every VM.
-                $config = $vm.ExtensionData.Config
-            }
-            catch {
-                $config = $null
+            if ($vmViews.ContainsKey($vmId)) {
+                $config = $vmViews[$vmId].Config
             }
 
             # The VM object already answered Notes, FolderId, ResourcePoolId and
@@ -733,20 +773,19 @@ function Get-NarvikVCenterData {
                 Disks          = $vmDisks
             })
         }
-        Write-NarvikLog -Level DEBUG -Message "VM candidates read: $($vmObjects.Count) VM(s) in $($candidateTimer.ElapsedMilliseconds) ms since the datastore cluster mapping (ExtensionData.Config per VM)."
+        Write-NarvikLog -Level DEBUG -Message "VM candidates read: $($vmObjects.Count) VM(s) in $($candidateTimer.ElapsedMilliseconds) ms (from Get-View)."
         $candidateTimer.Restart()
 
         # A template has no V1 Notes or resource pool properties, so both come
-        # from the managed object. Templates never run on a host, which keeps
-        # the host and cluster rules from applying to them.
+        # from its view. Templates never run on a host, which keeps the host and
+        # cluster rules from applying to them.
         foreach ($template in $templateObjects) {
             $templateId = Get-NarvikMoRefValue -Object $template
             $config = $null
-            try {
-                $config = $template.ExtensionData.Config
-            }
-            catch {
-                $config = $null
+            $templateView = $null
+            if ($vmViews.ContainsKey($templateId)) {
+                $templateView = $vmViews[$templateId]
+                $config = $templateView.Config
             }
 
             $notes = ''
@@ -755,8 +794,8 @@ function Get-NarvikVCenterData {
             }
 
             $resourcePoolId = ''
-            if ($null -ne $template.ExtensionData.ResourcePool) {
-                $resourcePoolId = [string]$template.ExtensionData.ResourcePool.Value
+            if ($null -ne $templateView -and $null -ne $templateView.ResourcePool) {
+                $resourcePoolId = [string]$templateView.ResourcePool.Value
             }
 
             $templateDisks = @()
@@ -775,7 +814,7 @@ function Get-NarvikVCenterData {
                 Disks          = $templateDisks
             })
         }
-        Write-NarvikLog -Level DEBUG -Message "Template candidates read: $($templateObjects.Count) template(s) in $($candidateTimer.ElapsedMilliseconds) ms (ExtensionData.Config and ResourcePool per template)."
+        Write-NarvikLog -Level DEBUG -Message "Template candidates read: $($templateObjects.Count) template(s) in $($candidateTimer.ElapsedMilliseconds) ms (from Get-View)."
 
         $vms = [System.Collections.Generic.List[object]]::new()
         $folderPathCache = @{}
@@ -789,7 +828,7 @@ function Get-NarvikVCenterData {
         foreach ($vmCandidate in $vmCandidates) {
             $vmProcessed++
             if ($vmProcessed % 100 -eq 0) {
-                Write-NarvikLog -Level DEBUG -Message "VM processing: $vmProcessed/$($vmCandidates.Count) candidate(s) in $($vmProcessTimer.ElapsedMilliseconds) ms (disk ExtensionData $($diskTimer.ElapsedMilliseconds) ms so far)."
+                Write-NarvikLog -Level DEBUG -Message "VM processing: $vmProcessed/$($vmCandidates.Count) candidate(s) in $($vmProcessTimer.ElapsedMilliseconds) ms (disk processing $($diskTimer.ElapsedMilliseconds) ms so far)."
             }
 
             if ($null -eq $vmCandidate.Config) {
@@ -914,21 +953,31 @@ function Get-NarvikVCenterData {
                     continue
                 }
 
-                # The disk properties come from Get-HardDisk: the V1 object has
-                # no Datastore or VM property, and its managed object keeps the
-                # backing details (disk mode, provisioning, datastore).
-                $backing = $diskObject.ExtensionData.Backing
+                # The backing details come from the V1 Get-HardDisk object itself:
+                # DiskType (raw device mapping), Persistence (independent mode),
+                # StorageFormat (provisioning) and Filename (datastore name). Reading
+                # the managed object's backing (ExtensionData) costs one round trip
+                # per disk. The values are mapped to the same strings the backing
+                # used to give (DiskMode, BackingType).
+                $rawDiskType = [string]$diskObject.DiskType
+                $isRdm = ($rawDiskType -match '^Raw')
                 $backingType = ''
-                if ($null -ne $backing) {
-                    $backingType = $backing.GetType().Name
+                if ($isRdm) {
+                    $backingType = 'VirtualDiskRawDiskMappingVer1BackingInfo'
+                }
+                elseif (-not [string]::IsNullOrWhiteSpace($rawDiskType)) {
+                    $backingType = 'VirtualDiskFlatVer2BackingInfo'
                 }
 
-                $isRdm = ($backingType -match 'RawDiskMapping')
-                $diskMode = ''
-                if ($null -ne $backing) {
-                    $diskMode = [string]$backing.DiskMode
+                $persistence = [string]$diskObject.Persistence
+                $diskMode = switch ($persistence) {
+                    'Persistent' { 'persistent' }
+                    'IndependentPersistent' { 'independent_persistent' }
+                    'IndependentNonPersistent' { 'independent_nonpersistent' }
+                    'NonPersistent' { 'nonpersistent' }
+                    default { '' }
                 }
-                $isIndependent = ($diskMode -match 'independent')
+                $isIndependent = ($persistence -match 'Independent')
 
                 $capacityKb = 0L
                 $sizeGb = 0.0
@@ -942,9 +991,15 @@ function Get-NarvikVCenterData {
                 }
                 $totalSizeGb += $sizeGb
 
-                $datastoreId = $null
-                if ($null -ne $backing -and $null -ne $backing.Datastore) {
-                    $datastoreId = [string]$backing.Datastore.Value
+                # Filename is '[datastore name] folder/disk.vmdk'.
+                $filenameDatastore = ''
+                if ([string]$diskObject.Filename -match '^\[(.+?)\]') {
+                    $filenameDatastore = $matches[1]
+                }
+
+                $datastoreId = ''
+                if (-not [string]::IsNullOrWhiteSpace($filenameDatastore) -and $datastoreIdByName.ContainsKey($filenameDatastore)) {
+                    $datastoreId = [string]$datastoreIdByName[$filenameDatastore]
                 }
 
                 $datastoreName = ''
@@ -972,21 +1027,19 @@ function Get-NarvikVCenterData {
                 }
 
                 $label = [string]$diskObject.Name
-                if ([string]::IsNullOrWhiteSpace($label) -and $null -ne $diskObject.ExtensionData.DeviceInfo) {
-                    $label = [string]$diskObject.ExtensionData.DeviceInfo.Label
-                }
                 if ([string]::IsNullOrWhiteSpace($label)) {
-                    $label = 'Disk ' + [string]$diskObject.ExtensionData.Key
+                    $label = 'Disk ' + [string]$diskObject.Id
                 }
 
+                # Thin for 'Thin'; Thick for 'Thick' and 'EagerZeroedThick' (as the
+                # backing's ThinProvisioned flag reported). RDM disks have no format.
                 $provisioning = ''
-                if ($null -ne $backing -and $backing.PSObject.Properties.Name -contains 'ThinProvisioned') {
-                    if ($backing.ThinProvisioned) {
-                        $provisioning = 'Thin'
-                    }
-                    else {
-                        $provisioning = 'Thick'
-                    }
+                $storageFormat = [string]$diskObject.StorageFormat
+                if ($storageFormat -eq 'Thin') {
+                    $provisioning = 'Thin'
+                }
+                elseif ($storageFormat -eq 'Thick' -or $storageFormat -eq 'EagerZeroedThick') {
+                    $provisioning = 'Thick'
                 }
 
                 $diskType = $backingType
@@ -1066,7 +1119,7 @@ function Get-NarvikVCenterData {
                 Disks             = @($disks)
             })
         }
-        Write-NarvikLog -Level DEBUG -Message "VM processing finished: $vmProcessed candidate(s) in $($vmProcessTimer.ElapsedMilliseconds) ms (disk ExtensionData $($diskTimer.ElapsedMilliseconds) ms)."
+        Write-NarvikLog -Level DEBUG -Message "VM processing finished: $vmProcessed candidate(s) in $($vmProcessTimer.ElapsedMilliseconds) ms (disk processing $($diskTimer.ElapsedMilliseconds) ms)."
 
         if ($lastFullChanged) {
             Save-NarvikLastFull
