@@ -360,10 +360,13 @@ function Start-NarvikBackupJob {
     }
 
     $argumentString = $arguments -join ' '
+    $commandLine = (Quote-NarvikWindowsArgument -Argument ([string]$script:Config.dsmc_path)) + ' ' + $argumentString
     $modeText = 'Incremental'
     if ($isFull) {
         $modeText = 'Full'
     }
+
+    Write-NarvikLog -Level DEBUG -Message "Executing $modeText backup for VM '$($vm.Name)' with working directory '$($script:Config.dsmc_dir)': $commandLine"
 
     # WorkingDirectory applies only to this child process; the daemon's own location is unchanged.
     $startParameters = @{
@@ -381,7 +384,7 @@ function Start-NarvikBackupJob {
         $process = Start-Process @startParameters
     }
     catch {
-        Write-NarvikLog -Level ERROR -Message "Failed to start $modeText backup for VM '$($vm.Name)': $($_.Exception.Message)"
+        Write-NarvikLog -Level ERROR -Message "Failed to start $modeText backup for VM '$($vm.Name)': $($_.Exception.Message). Command: $commandLine; working directory: '$($script:Config.dsmc_dir)'"
         Record-NarvikFailure -VmName $vm.Name -When $now
         return $null
     }
@@ -407,7 +410,7 @@ function Start-NarvikBackupJob {
     }
 
     [void]$script:ActiveJobs.Add($job)
-    Write-NarvikLog -Level INFO -Message "Started $modeText backup for VM '$($vm.Name)' (PID $($process.Id), host '$($vm.HostName)', cluster '$($vm.ClusterName)', size $($vm.TotalSizeGB) GB). Command: dsmc $argumentString"
+    Write-NarvikLog -Level INFO -Message "Started $modeText backup for VM '$($vm.Name)' (PID $($process.Id), host '$($vm.HostName)', cluster '$($vm.ClusterName)', size $($vm.TotalSizeGB) GB)."
     return $job
 }
 
