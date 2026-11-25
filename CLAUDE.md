@@ -135,9 +135,12 @@ these files.
 Startup/shutdown:
 - `Initialize-Narvik`: resolves and validates `RootPath`, sets up directories, acquires
   a single-instance process lock (`Acquire-NarvikProcessLock` — a second instance in the
-  same root is refused), opens the log, loads persisted state
-  (`Load-NarvikState`/`Load-NarvikLastFull`/`Load-NarvikIndependentDisks`), reads
-  config, checks administrator privilege if configured, and imports PowerCLI.
+  same root is refused), reads and validates config (`Update-NarvikRuntimeConfig`, before
+  the log exists: an invalid config is fatal on stdout and does not rotate the old log),
+  opens the log (`Initialize-NarvikLog`, which copies the stdout lines buffered in
+  `$script:StartupLog` into it), loads persisted state
+  (`Load-NarvikState`/`Load-NarvikLastFull`/`Load-NarvikIndependentDisks`), checks
+  administrator privilege if configured, and imports PowerCLI.
 - `Invoke-NarvikMain`: the daemon's `while ($true)` loop, polling every 10 seconds. Each
   iteration: handle control files → reload config
   (`Update-NarvikRuntimeConfig`, re-read every cycle; an invalid reload keeps the last

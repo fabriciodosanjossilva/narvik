@@ -27,6 +27,13 @@ function Initialize-NarvikLog {
         $script:LogWriter.AutoFlush = $true
 
         # Confirm the log file is really writable before stdout is turned off.
+        # Lines written to stdout before the log was open (for example, configuration
+        # warnings) are copied into the log file first. StartupLog is kept, because the
+        # fatal e-mail uses it as its attachment when the log file is not available.
+        foreach ($startupEntry in $script:StartupLog) {
+            $script:LogWriter.WriteLine($startupEntry)
+        }
+
         $probeLine = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + ' [INFO] Log file opened.'
         $script:LogWriter.WriteLine($probeLine)
         $script:LogWriter.Flush()
@@ -273,13 +280,17 @@ function Initialize-Narvik {
 
     Initialize-NarvikDirectories
     Acquire-NarvikProcessLock
+
+    # The configuration is read before the log is opened: an invalid configuration
+    # is a fatal error reported on stdout, and it must not rotate the existing log.
+    # Until the log is open, Write-NarvikLog keeps writing to stdout and buffers the lines.
+    Update-NarvikRuntimeConfig
+
     Initialize-NarvikLog
 
     Load-NarvikState
     Load-NarvikLastFull
     Load-NarvikIndependentDisks
-
-    Update-NarvikRuntimeConfig
 
     if ($script:Config.check_administrator_privilege) {
         if (-not (Test-NarvikIsAdministrator)) {

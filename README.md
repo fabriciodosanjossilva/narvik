@@ -97,9 +97,12 @@ Narvik is a backup automation for "IBM Storage Protect for VMWare" on Windows Se
   from files); a fatal exit attaches the full log.
 - Monitoring hooks: writes `eligible_count.txt`, `eligible_vms.txt` and
   `pending_count.txt` so external tooling can watch the queue.
-- Logs: one log per VM backup plus a daily-rotated main log; the main log is
-  checked for write access before the configuration is read, and Narvik exits
-  with a fatal error if it cannot be written. Setting `debug` to `true` in the
+- Logs: one log per VM backup plus a daily-rotated main log; the configuration
+  is read and validated first, so an invalid configuration is a fatal error
+  reported on stdout and leaves the existing main log untouched. The main log
+  is only opened (and rotated) after that, and Narvik exits with a fatal error
+  if it cannot be written. Lines written to stdout before the main log was open
+  are copied into it. Setting `debug` to `true` in the
   configuration enables detailed decision logs
   (inventory cache use, scheduling skips, backoff, full-backup window and
   alert suppression) for troubleshooting.

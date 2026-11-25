@@ -496,15 +496,20 @@ function Update-NarvikRuntimeConfig {
         $script:VCenterFingerprint = $newFingerprint
         $script:LastConfigError = ''
     }
-    catch [System.UnauthorizedAccessException] {
-        throw
-    }
     catch {
+        $errorMessage = $_.Exception.Message
+
         if ($null -eq $script:Config) {
+            # Startup: there is no configuration to fall back to. The error is an
+            # anticipated fatal error, reported without a stack trace.
+            Throw-NarvikFatal -Message $errorMessage.Trim() -Code 1
+        }
+
+        # In the loop, an access-control failure still stops the daemon.
+        if ($_.Exception -is [System.UnauthorizedAccessException]) {
             throw
         }
 
-        $errorMessage = $_.Exception.Message
         if ($errorMessage -ne $script:LastConfigError) {
             Write-NarvikLog -Level ERROR -Message "Configuration reload failed; keeping the previous configuration: $errorMessage"
             $script:LastConfigError = $errorMessage
