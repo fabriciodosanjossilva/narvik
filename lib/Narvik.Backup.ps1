@@ -365,17 +365,16 @@ function Start-NarvikBackupJob {
         $modeText = 'Full'
     }
 
+    # WorkingDirectory applies only to this child process; the daemon's own location is unchanged.
     $startParameters = @{
         FilePath               = $script:Config.dsmc_path
+        WorkingDirectory       = $script:Config.dsmc_dir
         ArgumentList           = $argumentString
         RedirectStandardOutput = $logPath
         RedirectStandardError  = $errorPath
+        WindowStyle            = 'Hidden'
         PassThru               = $true
         ErrorAction            = 'Stop'
-    }
-    # -WindowStyle is only supported by Start-Process on Windows.
-    if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
-        $startParameters['WindowStyle'] = 'Hidden'
     }
 
     try {

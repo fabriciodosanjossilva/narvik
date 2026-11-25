@@ -350,7 +350,7 @@ function Initialize-Narvik {
     Write-NarvikLog -Level INFO -Message "Process ID: $PID."
     Write-NarvikLog -Level INFO -Message "Debug logging: $($script:Config.debug)."
     Write-NarvikLog -Level INFO -Message "vCenter: '$($script:Config.vcenter_server):$($script:Config.vcenter_port)' as '$($script:Config.vcenter_user)'."
-    Write-NarvikLog -Level INFO -Message "dsmc: '$($script:Config.dsmc_path)'; optfile: '$($script:Config.dsmc_opt_file)'; asnodename: '$($script:Config.dsmc_asnodename)'; preview mode: $($script:Config.dsmc_use_preview)."
+    Write-NarvikLog -Level INFO -Message "dsmc: '$($script:Config.dsmc_path)' (working directory '$($script:Config.dsmc_dir)'); optfile: '$($script:Config.dsmc_opt_file)'; asnodename: '$($script:Config.dsmc_asnodename)'; preview mode: $($script:Config.dsmc_use_preview)."
     Write-NarvikLog -Level INFO -Message "Maximum concurrent backups: $($script:Config.max_backup_threads)."
 
     if ($script:Config.vcenter_ignore_certificate) {

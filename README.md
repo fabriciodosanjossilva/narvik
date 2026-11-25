@@ -35,6 +35,9 @@ Narvik is a backup automation for "IBM Storage Protect for VMWare" on Windows Se
 - dsmc options: `dsmc_opt_file` adds `-optfile=<file>` to the backup command
   and `dsmc_asnodename` adds `-asnodename=<name>`. Both are optional and are
   omitted from the command line when not configured.
+- `dsmc_path` is the `dsmc.exe` to run, either an absolute path or relative to the
+  root directory. It must exist and have a `.exe` extension; the process starts with
+  the executable's own folder as its working directory.
 - Concurrency control: caps simultaneous `dsmc` processes
   (`max_backup_threads`) and never starts two backups on the same ESXi host
   at the same time.

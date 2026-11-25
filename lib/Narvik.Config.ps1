@@ -68,10 +68,16 @@ function Import-NarvikConfig {
     if ([string]::IsNullOrWhiteSpace($dsmcPathValue)) {
         throw [System.Exception]::new("Configuration key 'dsmc_path' must not be empty.")
     }
+    # Relative values are resolved against the root folder; absolute values are kept as-is.
     $dsmcPath = Resolve-NarvikPath -Path $dsmcPathValue -BasePath $script:RootPath
     if (-not (Test-Path -LiteralPath $dsmcPath -PathType Leaf)) {
         throw [System.Exception]::new("dsmc executable not found: '$dsmcPath'.")
     }
+    if ([System.IO.Path]::GetExtension($dsmcPath) -ine '.exe') {
+        throw [System.Exception]::new("dsmc_path must point to an .exe file: '$dsmcPath'.")
+    }
+    # Folder of the executable; used as the child process working directory at launch.
+    $dsmcDir = [System.IO.Path]::GetDirectoryName($dsmcPath)
 
     $dsmcOptFile = $null
     $dsmcOptFileValue = [string](Get-NarvikConfigValue -Config $config -Key 'dsmc_opt_file' -Default '')
@@ -415,6 +421,7 @@ function Import-NarvikConfig {
         check_administrator_privilege         = $checkAdministratorPrivilege
         bypass_security                       = $bypassSecurity
         dsmc_path                             = $dsmcPath
+        dsmc_dir                              = $dsmcDir
         dsmc_opt_file                         = $dsmcOptFile
         dsmc_asnodename                       = $dsmcAsnodename
         dsmc_use_preview                      = $dsmcUsePreview

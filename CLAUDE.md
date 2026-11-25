@@ -7,8 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Narvik is a PowerShell daemon that automates VM snapshot backups to IBM Storage Protect
 (dsmc) for VMs living on a VMware vCenter. It runs continuously on Windows Server 2019,
 polling vCenter via PowerCLI, deciding which VMs need a backup, and launching/monitoring
-`dsmc.exe` child processes. `dsmc_fake.ps1` is a stand-in for the real `dsmc.exe` used for
-local/manual testing without IBM Storage Protect or a real backup target.
+`dsmc.exe` child processes.
 
 `Narvik.ps1` is a thin entry point: it declares the shared `$script:`-scoped state, dot-
 sources every file under `lib/Narvik.*.ps1` (resolved from `$PSScriptRoot`, so the whole
@@ -50,13 +49,9 @@ is the spec.
 - Operator control files, placed directly in the root directory while the daemon is
   running: `stop.txt` (graceful — finish active backups, then exit) and `abort.txt`
   (immediate — kill active backups and exit). Both are deleted by Narvik once acted on.
-- There is no test runner. To exercise the daemon manually, point `dsmc_path` in
-  `config.json` at `dsmc_fake.ps1` instead of the real `dsmc.exe`. Read the large header
-  comment in `dsmc_fake.ps1` first — it documents the exact fake behavior (which VM-name
-  substrings trigger failures, duplicate-GUID retries, critical errors, random failures,
-  Notes-block updates) and the environment variables that control timing/determinism for
-  automated runs (`DSMC_FAKE_PAUSE_SCALE`, `DSMC_FAKE_RANDOM_FAILURE_PERCENT`,
-  `DSMC_FAKE_RUNTIME_ROOT`).
+- There is no test runner. `dsmc_path` in `config.json` is either an absolute path or a
+  path relative to the root directory, and must point to an existing `.exe` file. Narvik
+  runs `dsmc` with its own folder as the working directory (set on the child process only).
 - `dsmc_use_preview: true` in config (the shipped default) makes Narvik pass `-preview`
   to dsmc so nothing is actually backed up — safe default for trying the daemon against
   a real vCenter.
@@ -69,10 +64,8 @@ configuration may be created, modified, moved or deleted, not even temporarily. 
 read calls (`Get-*`, `Get-View` without side effects, `Get-TagAssignment`, `Connect-VIServer`
 and `Disconnect-VIServer`). Do not run `Set-*`, `New-*`, `Remove-*`, `Move-*`, `Start-*`,
 `Stop-*`, `Restart-*`, `Invoke-*`, `Set-PowerCLIConfiguration` with side effects on the
-server, or any `dsmc` backup against it. This includes `dsmc_fake.ps1`: when
-`DSMC_FAKE_RUNTIME_ROOT` is set it writes the `<Last Backup (IBM Spectrum Protect)>` block
-into VM Notes on the vCenter, so never run the daemon with `dsmc_path` pointing at it
-against this vCenter. Run the daemon end to end only against a non-production vCenter.
+server, or any `dsmc` backup against it. Run the daemon end to end only against a
+non-production vCenter.
 
 Read-only probes and before/after comparisons against a real vCenter work from the
 development machine. Use placeholders below (`<runtime-root>`, `<vcenter-host>`,
@@ -187,8 +180,7 @@ Backup execution:
   `log/vm/`.
 - `Complete-NarvikJobs`/`Read-NarvikJobOutput`/`Invoke-NarvikAnsErrorScan` monitor
   running jobs, scan output for `ANS<digits>E` codes, and determine success purely from
-  exit code 0 plus "backed-up objects" appearing in the output — matching the logic
-  `dsmc_fake.ps1` emulates for testing. `ANS1715E` triggers the self-healing
+  exit code 0 plus "backed-up objects" appearing in the output. `ANS1715E` triggers the self-healing
   duplicate-GUID retry (`Set-NarvikDuplicateGuid` → next attempt adds
   `-VMBACKUPUPDATEGUID -mode IFFull`).
 - Last-backup timestamps are read back from the VM's vCenter Notes field
