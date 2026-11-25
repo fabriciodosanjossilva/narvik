@@ -67,7 +67,8 @@ Narvik is a backup automation for "IBM Storage Protect for VMWare" on Windows Se
   management class mapping. The disk size alert names each affected disk, its
   current size in KiB and the corrected size (rounded up to the next multiple
   of 1 MiB) in KiB, plus the manual command to resize it with
-  `Set-HardDisk -capacityKB`. The single cluster is decided from the VM's
+  `Set-HardDisk -capacityKB`. Independent disks are skipped by this size check:
+  their size never excludes a VM nor appears in the alert. The single cluster is decided from the VM's
   disks: a disk on a datastore outside every datastore cluster, or disks
   spanning more than one cluster, also makes the VM ineligible, while ISO
   images attached to CD/DVD drives are ignored; a VM without disks is not

@@ -380,6 +380,11 @@ function Update-NarvikEligibility {
                 Add-NarvikReason -Reasons $reasons -Reason "RDM disk '$($disk.Label)'"
             }
 
+            # Independent disks are exempt from the 1 MiB size rule.
+            if ($disk.Independent) {
+                continue
+            }
+
             $capacityKb = 0L
             if ($disk.PSObject.Properties.Name -contains 'CapacityInKB') {
                 try {

@@ -265,6 +265,8 @@ function Get-NarvikVCenterData {
 
     try {
         $connection = Connect-NarvikVCenter
+        Write-NarvikLog -Level DEBUG -Message "vCenter connected in $($collectionTimer.ElapsedMilliseconds) ms (since collection start)."
+        $stepTimer = [System.Diagnostics.Stopwatch]::StartNew()
 
         # One inventory cmdlet per entity type, instead of a single virtual
         # machine view: the collected objects are also what Get-TagAssignment
@@ -272,32 +274,53 @@ function Get-NarvikVCenterData {
         # read as well and both keep their current place in the inventory.
         Write-NarvikLog -Level INFO -Message 'Collecting vCenter inventory: virtual machines (Get-VM).'
         $vmObjects = @(Get-VM -ErrorAction Stop | Where-Object { $null -ne $_ })
+        Write-NarvikLog -Level DEBUG -Message "Get-VM returned $($vmObjects.Count) object(s) in $($stepTimer.ElapsedMilliseconds) ms."
+        $stepTimer.Restart()
         Write-NarvikLog -Level INFO -Message 'Collecting vCenter inventory: templates (Get-Template).'
         $templateObjects = @(Get-Template -ErrorAction Stop | Where-Object { $null -ne $_ })
+        Write-NarvikLog -Level DEBUG -Message "Get-Template returned $($templateObjects.Count) object(s) in $($stepTimer.ElapsedMilliseconds) ms."
+        $stepTimer.Restart()
         Write-NarvikLog -Level INFO -Message 'Collecting vCenter inventory: datastores (Get-Datastore).'
         $datastoreObjects = @(Get-Datastore -ErrorAction Stop | Where-Object { $null -ne $_ })
+        Write-NarvikLog -Level DEBUG -Message "Get-Datastore returned $($datastoreObjects.Count) object(s) in $($stepTimer.ElapsedMilliseconds) ms."
+        $stepTimer.Restart()
         Write-NarvikLog -Level INFO -Message 'Collecting vCenter inventory: datastore clusters (Get-DatastoreCluster).'
         $datastoreClusterObjects = @(Get-DatastoreCluster -ErrorAction Stop | Where-Object { $null -ne $_ })
+        Write-NarvikLog -Level DEBUG -Message "Get-DatastoreCluster returned $($datastoreClusterObjects.Count) object(s) in $($stepTimer.ElapsedMilliseconds) ms."
+        $stepTimer.Restart()
         # Only VM folders are relevant: they build the VM folder path and are
         # the only folder scope of the opt-out rule. Datastore, host, network
         # and other folder types are never read.
         Write-NarvikLog -Level INFO -Message 'Collecting vCenter inventory: VM folders (Get-Folder -Type VM).'
         $folderObjects = @(Get-Folder -Type VM -ErrorAction Stop | Where-Object { $null -ne $_ })
+        Write-NarvikLog -Level DEBUG -Message "Get-Folder -Type VM returned $($folderObjects.Count) object(s) in $($stepTimer.ElapsedMilliseconds) ms."
+        $stepTimer.Restart()
         Write-NarvikLog -Level INFO -Message 'Collecting vCenter inventory: datacenters (Get-Datacenter).'
         $datacenterObjects = @(Get-Datacenter -ErrorAction Stop | Where-Object { $null -ne $_ })
+        Write-NarvikLog -Level DEBUG -Message "Get-Datacenter returned $($datacenterObjects.Count) object(s) in $($stepTimer.ElapsedMilliseconds) ms."
+        $stepTimer.Restart()
         Write-NarvikLog -Level INFO -Message 'Collecting vCenter inventory: hosts (Get-VMHost).'
         $hostObjects = @(Get-VMHost -ErrorAction Stop | Where-Object { $null -ne $_ })
+        Write-NarvikLog -Level DEBUG -Message "Get-VMHost returned $($hostObjects.Count) object(s) in $($stepTimer.ElapsedMilliseconds) ms."
+        $stepTimer.Restart()
         Write-NarvikLog -Level INFO -Message 'Collecting vCenter inventory: resource pools (Get-ResourcePool).'
         $resourcePoolObjects = @(Get-ResourcePool -ErrorAction Stop | Where-Object { $null -ne $_ })
+        Write-NarvikLog -Level DEBUG -Message "Get-ResourcePool returned $($resourcePoolObjects.Count) object(s) in $($stepTimer.ElapsedMilliseconds) ms."
+        $stepTimer.Restart()
         Write-NarvikLog -Level INFO -Message 'Collecting vCenter inventory: clusters (Get-Cluster).'
         $clusterObjects = @(Get-Cluster -ErrorAction Stop | Where-Object { $null -ne $_ })
+        Write-NarvikLog -Level DEBUG -Message "Get-Cluster returned $($clusterObjects.Count) object(s) in $($stepTimer.ElapsedMilliseconds) ms."
+        $stepTimer.Restart()
 
         # Get-HardDisk is issued once per virtual machine collection and once
         # per template collection, and the disks are grouped by their parent.
         $diskObjects = [System.Collections.Generic.List[object]]::new()
         if ($vmObjects.Count -gt 0) {
             Write-NarvikLog -Level INFO -Message "Collecting virtual machine disks (Get-HardDisk -VM) for $($vmObjects.Count) virtual machine(s)."
-            foreach ($disk in @(Get-HardDisk -VM $vmObjects -ErrorAction Stop)) {
+            $vmDisks = @(Get-HardDisk -VM $vmObjects -ErrorAction Stop)
+            Write-NarvikLog -Level DEBUG -Message "Get-HardDisk -VM returned $($vmDisks.Count) disk(s) in $($stepTimer.ElapsedMilliseconds) ms."
+            $stepTimer.Restart()
+            foreach ($disk in $vmDisks) {
                 if ($null -ne $disk) {
                     [void]$diskObjects.Add($disk)
                 }
@@ -305,7 +328,10 @@ function Get-NarvikVCenterData {
         }
         if ($templateObjects.Count -gt 0) {
             Write-NarvikLog -Level INFO -Message "Collecting template disks (Get-HardDisk -Template) for $($templateObjects.Count) template(s)."
-            foreach ($disk in @(Get-HardDisk -Template $templateObjects -ErrorAction Stop)) {
+            $templateDisks = @(Get-HardDisk -Template $templateObjects -ErrorAction Stop)
+            Write-NarvikLog -Level DEBUG -Message "Get-HardDisk -Template returned $($templateDisks.Count) disk(s) in $($stepTimer.ElapsedMilliseconds) ms."
+            $stepTimer.Restart()
+            foreach ($disk in $templateDisks) {
                 if ($null -ne $disk) {
                     [void]$diskObjects.Add($disk)
                 }
@@ -313,9 +339,11 @@ function Get-NarvikVCenterData {
         }
 
         $disksByParent = @{}
+        $disksWithoutParent = 0
         foreach ($disk in $diskObjects) {
-            $parentId = Get-NarvikMoRefValue -Object $disk.Parent
+            $parentId = Get-NarvikMoRefValue -Object $disk.ParentId
             if ([string]::IsNullOrWhiteSpace($parentId)) {
+                $disksWithoutParent++
                 continue
             }
             if (-not $disksByParent.ContainsKey($parentId)) {
@@ -323,6 +351,8 @@ function Get-NarvikVCenterData {
             }
             [void]$disksByParent[$parentId].Add($disk)
         }
+        Write-NarvikLog -Level DEBUG -Message "Grouped $($diskObjects.Count) disk(s) by parent into $($disksByParent.Count) parent(s) in $($stepTimer.ElapsedMilliseconds) ms ($disksWithoutParent without parent)."
+        $stepTimer.Restart()
 
         $readMs = $collectionTimer.ElapsedMilliseconds
 
@@ -357,6 +387,8 @@ function Get-NarvikVCenterData {
             Write-NarvikLog -Level DEBUG -Message "Ignored non-VMFS datastore(s) for tag collection and inventory listing: $($ignoredParts -join ', ')."
         }
 
+        Write-NarvikLog -Level DEBUG -Message "Datastore classification of $($datastoreObjects.Count) datastore(s) took $($stepTimer.ElapsedMilliseconds) ms."
+        $stepTimer.Restart()
         $collectionTimer.Restart()
 
         # Tag assignments are read only for the tag named by the snapshot tag
@@ -378,6 +410,8 @@ function Get-NarvikVCenterData {
             try {
                 Write-NarvikLog -Level INFO -Message "Collecting vCenter tag '$tagRuleName' (Get-Tag)."
                 $tagViews = @(Get-Tag -Name $tagRuleName -ErrorAction SilentlyContinue -ErrorVariable tagLookupErrors | Where-Object { $null -ne $_ })
+                Write-NarvikLog -Level DEBUG -Message "Get-Tag returned $($tagViews.Count) view(s) in $($stepTimer.ElapsedMilliseconds) ms."
+                $stepTimer.Restart()
             }
             catch {
                 $script:TagRuleFailure = $true
@@ -399,6 +433,8 @@ function Get-NarvikVCenterData {
 
             try {
                 $taggedMoRefs = Get-NarvikTaggedMoRefs -Vms (@($vmObjects) + @($templateObjects)) -Datastores $vmfsDatastores -DatastoreClusters $datastoreClusterObjects -Folders $folderObjects -Hosts $hostObjects -ResourcePools $resourcePoolObjects -Clusters $clusterObjects -TagViews $tagViews
+                Write-NarvikLog -Level DEBUG -Message "Tag assignment lookup finished in $($stepTimer.ElapsedMilliseconds) ms."
+                $stepTimer.Restart()
             }
             catch {
                 $script:TagRuleFailure = $true
