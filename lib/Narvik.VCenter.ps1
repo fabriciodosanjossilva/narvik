@@ -242,7 +242,9 @@ function Get-NarvikTaggedMoRefs {
         }
 
         Write-NarvikLog -Level INFO -Message "Collecting assignments of tag '$tagLabel' for $($entities.Count) $($typeSet.Label) object(s) (Get-TagAssignment)."
+        $typeTimer = [System.Diagnostics.Stopwatch]::StartNew()
         $assignments = @(Get-TagAssignment -Entity $entities -Tag $TagViews -ErrorAction Stop | Where-Object { $null -ne $_ })
+        Write-NarvikLog -Level DEBUG -Message "Get-TagAssignment for $($typeSet.Label): $($assignments.Count) assignment(s) for $($entities.Count) object(s) in $($typeTimer.ElapsedMilliseconds) ms."
         foreach ($assignment in $assignments) {
             if ($null -eq $assignment.Entity) {
                 continue
@@ -449,6 +451,9 @@ function Get-NarvikVCenterData {
 
         $tagReadMs = $collectionTimer.ElapsedMilliseconds
         $collectionTimer.Restart()
+        # Times every step after the tag collection, so the gap before the first
+        # VM Notes line can be split into its parts in the DEBUG log.
+        $postTagTimer = [System.Diagnostics.Stopwatch]::StartNew()
 
         $folderMap = @{}
         foreach ($folder in $folderObjects) {
@@ -638,6 +643,7 @@ function Get-NarvikVCenterData {
         foreach ($unknownEntry in $unknownPriorityEntries) {
             Write-NarvikLog -Level WARNING -Message ([string]$unknownEntry.Message)
         }
+        Write-NarvikLog -Level DEBUG -Message "Host, cluster and resource pool maps built in $($postTagTimer.ElapsedMilliseconds) ms since tag collection."
 
         $podByDatastore = @{}
         foreach ($pod in $datastoreClusterObjects) {
@@ -693,11 +699,15 @@ function Get-NarvikVCenterData {
             })
         }
 
+        Write-NarvikLog -Level DEBUG -Message "Datastore clusters mapped in $($postTagTimer.ElapsedMilliseconds) ms since tag collection ($($datastoreClusterObjects.Count) cluster(s))."
         $vmCandidates = [System.Collections.Generic.List[object]]::new()
+        $candidateTimer = [System.Diagnostics.Stopwatch]::StartNew()
         foreach ($vm in $vmObjects) {
             $vmId = Get-NarvikMoRefValue -Object $vm
             $config = $null
             try {
+                # ExtensionData triggers one vCenter round trip per VM: this loop
+                # is the first place where that cost is paid for every VM.
                 $config = $vm.ExtensionData.Config
             }
             catch {
@@ -723,6 +733,8 @@ function Get-NarvikVCenterData {
                 Disks          = $vmDisks
             })
         }
+        Write-NarvikLog -Level DEBUG -Message "VM candidates read: $($vmObjects.Count) VM(s) in $($candidateTimer.ElapsedMilliseconds) ms since the datastore cluster mapping (ExtensionData.Config per VM)."
+        $candidateTimer.Restart()
 
         # A template has no V1 Notes or resource pool properties, so both come
         # from the managed object. Templates never run on a host, which keeps
@@ -763,13 +775,23 @@ function Get-NarvikVCenterData {
                 Disks          = $templateDisks
             })
         }
+        Write-NarvikLog -Level DEBUG -Message "Template candidates read: $($templateObjects.Count) template(s) in $($candidateTimer.ElapsedMilliseconds) ms (ExtensionData.Config and ResourcePool per template)."
 
         $vms = [System.Collections.Generic.List[object]]::new()
         $folderPathCache = @{}
         $notesParseWarnings = 0
         $lastFullChanged = $false
 
+        Write-NarvikLog -Level DEBUG -Message "Starting VM processing for $($vmCandidates.Count) candidate(s) after $($postTagTimer.ElapsedMilliseconds) ms since tag collection."
+        $vmProcessTimer = [System.Diagnostics.Stopwatch]::StartNew()
+        $diskTimer = [System.Diagnostics.Stopwatch]::new()
+        $vmProcessed = 0
         foreach ($vmCandidate in $vmCandidates) {
+            $vmProcessed++
+            if ($vmProcessed % 100 -eq 0) {
+                Write-NarvikLog -Level DEBUG -Message "VM processing: $vmProcessed/$($vmCandidates.Count) candidate(s) in $($vmProcessTimer.ElapsedMilliseconds) ms (disk ExtensionData $($diskTimer.ElapsedMilliseconds) ms so far)."
+            }
+
             if ($null -eq $vmCandidate.Config) {
                 Write-NarvikLog -Level DEBUG -Message "VM '$([string]$vmCandidate.Name)' has no configuration data; skipped."
                 continue
@@ -886,6 +908,7 @@ function Get-NarvikVCenterData {
             $disks = [System.Collections.Generic.List[object]]::new()
             $totalSizeGb = 0.0
 
+            $diskTimer.Start()
             foreach ($diskObject in @($vmCandidate.Disks)) {
                 if ($null -eq $diskObject) {
                     continue
@@ -991,6 +1014,8 @@ function Get-NarvikVCenterData {
                 })
             }
 
+            $diskTimer.Stop()
+
             # The datastore cluster association comes from the VM's disks only.
             # Datastores used by other devices (for example ISO images attached
             # to CD/DVD drives) and the datastore holding the VM home files are
@@ -1041,6 +1066,7 @@ function Get-NarvikVCenterData {
                 Disks             = @($disks)
             })
         }
+        Write-NarvikLog -Level DEBUG -Message "VM processing finished: $vmProcessed candidate(s) in $($vmProcessTimer.ElapsedMilliseconds) ms (disk ExtensionData $($diskTimer.ElapsedMilliseconds) ms)."
 
         if ($lastFullChanged) {
             Save-NarvikLastFull
@@ -1053,6 +1079,7 @@ function Get-NarvikVCenterData {
         $sortedVms = @($vms | Sort-Object -Property FolderPath, Name)
         $buildMs = $collectionTimer.ElapsedMilliseconds
         Write-NarvikLog -Level DEBUG -Message "vCenter inventory timing: inventory reads $readMs ms, tag collection $tagReadMs ms, inventory build $buildMs ms."
+        Write-NarvikLog -Level DEBUG -Message "vCenter inventory collection total: $([math]::Round(((Get-Date) - $collectStart).TotalSeconds, 1)) s since collection start."
 
         return [pscustomobject]@{
             CollectedAt          = $collectStart
