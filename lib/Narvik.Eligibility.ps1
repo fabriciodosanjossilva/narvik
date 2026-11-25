@@ -511,7 +511,11 @@ function Update-NarvikEligibility {
         foreach ($entry in $script:NonEligibleVMs) {
             Write-NarvikLog -Level INFO -Message "VM '$($entry.VM.Name)' is not eligible: $(@($entry.Reasons) -join '; ')."
         }
-        Write-NarvikLog -Level DEBUG -Message "Eligibility updated: $(@($script:EligibleVMs).Count) VM(s) eligible, $(@($script:NonEligibleVMs).Count) non-eligible."
+        Write-NarvikLog -Level INFO -Message "Eligibility updated: $(@($script:EligibleVMs).Count) VM(s) eligible, $(@($script:NonEligibleVMs).Count) non-eligible."
+        Write-NarvikLog -Level DEBUG -Message "Eligible VMs:"
+        foreach ($vm in $script:EligibleVMs) {
+            Write-NarvikLog -Level DEBUG -Message "$($vm.Name)"
+        }
         $script:NonEligibleSignature = $signature
     }
 
