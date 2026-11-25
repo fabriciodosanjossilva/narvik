@@ -11,7 +11,9 @@
     and control files below the selected root directory.
 
 .PARAMETER RootPath
-    Mandatory root directory. When it is omitted, Narvik writes an error to
+    Mandatory root directory, passed as the first positional argument:
+    Narvik.ps1 <directory>. Relative paths are resolved from the current
+    PowerShell location. When it is omitted, Narvik writes an error to
     standard output and exits with code 1.
 
 .NOTES
@@ -123,7 +125,10 @@ catch {
 
     try {
         Write-NarvikLog -Level ERROR -Message "Fatal error: $fatalMessage"
-        if (-not [string]::IsNullOrWhiteSpace($_.ScriptStackTrace)) {
+        # Anticipated fatal errors (Throw-NarvikFatal) already carry a clear message;
+        # the stack trace is only logged for unexpected exceptions.
+        $isAnticipated = $_.Exception.Data.Contains('NarvikFatal')
+        if (-not $isAnticipated -and -not [string]::IsNullOrWhiteSpace($_.ScriptStackTrace)) {
             Write-NarvikLog -Level ERROR -Message "Stack trace: $($_.ScriptStackTrace)"
         }
     }

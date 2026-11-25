@@ -236,7 +236,7 @@ function Release-NarvikProcessLock {
 function Initialize-Narvik {
     $rootValue = $script:RootPathArgument
     if ([string]::IsNullOrWhiteSpace($rootValue)) {
-        Throw-NarvikFatal -Message 'The root directory parameter is required. Usage: Narvik.ps1 -RootPath <directory>.' -Code 1
+        Throw-NarvikFatal -Message 'The root directory is required. Usage: Narvik.ps1 <directory>.' -Code 1
     }
 
     if ($PSVersionTable.PSVersion -lt [Version]'5.1') {
@@ -244,7 +244,10 @@ function Initialize-Narvik {
     }
 
     try {
-        $script:RootPath = [System.IO.Path]::GetFullPath($rootValue)
+        # GetFullPath resolves relative paths against the .NET process directory, which
+        # does not follow PowerShell's current location. Resolve against that instead.
+        $basePath = (Get-Location -PSProvider FileSystem).ProviderPath
+        $script:RootPath = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($basePath, $rootValue))
     }
     catch {
         Throw-NarvikFatal -Message "Invalid root directory '$rootValue': $($_.Exception.Message)" -Code 1

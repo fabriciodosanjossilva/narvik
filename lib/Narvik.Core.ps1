@@ -290,7 +290,11 @@ function Throw-NarvikFatal {
     )
 
     $script:FatalExitCode = $Code
-    throw [System.Exception]::new($Message)
+    $exception = [System.Exception]::new($Message)
+    # Marks the exception as an anticipated fatal error, so the top-level handler
+    # omits the stack trace for it. Unanticipated exceptions do not carry this marker.
+    $exception.Data['NarvikFatal'] = $true
+    throw $exception
 }
 
 function Read-NarvikPasswordFile {

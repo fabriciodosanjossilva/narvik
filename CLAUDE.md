@@ -35,7 +35,7 @@ is the spec.
 - Requires Windows PowerShell 5.1+ and the `VMware.VimAutomation.Core` PowerCLI module
   (checked and imported at startup; the script throws a fatal error and exits if either
   is missing).
-- Entry point: `Narvik.ps1 -RootPath <directory>`. `RootPath` is mandatory but not
+- Entry point: `Narvik.ps1 <directory>` (positional). `RootPath` is mandatory but not
   declared `Mandatory` in the param block on purpose — a missing value must go through
   the normal fatal-error/stdout path (`Throw-NarvikFatal`), not PowerShell's interactive
   prompt.
