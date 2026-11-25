@@ -664,6 +664,9 @@ function Write-NarvikStats {
     }
 
     Write-NarvikLog -Level INFO -Message "Pending waiting: $($waiting.Count) VM(s), $([math]::Round($waitingSize, 2)) GB."
+    foreach ($vm in $waiting) {
+        Write-NarvikLog -Level DEBUG -Message "Pending VM: $($vm.Name)"
+    }
 
     foreach ($job in @($activeIncremental | Sort-Object -Property VmName)) {
         $elapsedMinutes = [math]::Round(($now - $job.StartTime).TotalMinutes, 1)

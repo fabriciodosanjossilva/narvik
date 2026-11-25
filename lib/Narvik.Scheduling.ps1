@@ -56,19 +56,18 @@ function Test-NarvikClusterAtCapacity {
     return ($activeCount -ge $maxThreads)
 }
 
-function Test-NarvikBackoffActive {
+function Get-NarvikBackoffUntil {
     param(
-        [string]$VmName,
-        [datetime]$Now
+        [string]$VmName
     )
 
     if (-not $script:State.failed_attempts.ContainsKey($VmName)) {
-        return $false
+        return $null
     }
 
     $entry = $script:State.failed_attempts[$VmName]
     if ($null -eq $entry.last_attempt) {
-        return $false
+        return $null
     }
 
     $count = [int]$entry.count
@@ -88,7 +87,20 @@ function Test-NarvikBackoffActive {
         $minutes = 720
     }
 
-    $nextAttempt = $entry.last_attempt.AddMinutes($minutes)
+    return $entry.last_attempt.AddMinutes($minutes)
+}
+
+function Test-NarvikBackoffActive {
+    param(
+        [string]$VmName,
+        [datetime]$Now
+    )
+
+    $nextAttempt = Get-NarvikBackoffUntil -VmName $VmName
+    if ($null -eq $nextAttempt) {
+        return $false
+    }
+
     return ($Now -lt $nextAttempt)
 }
 
@@ -116,7 +128,7 @@ function Select-NarvikNextBackup {
             }
 
             if (Test-NarvikBackoffActive -VmName $vm.Name -Now $now) {
-                Write-NarvikLog -Level DEBUG -Message "VM '$($vm.Name)' is in failure backoff; skipping."
+                Write-NarvikLog -Level DEBUG -Message "VM '$($vm.Name)' is in failure backoff until $((Get-NarvikBackoffUntil -VmName $vm.Name).ToString('yyyy-MM-dd HH:mm:ss')); skipping."
                 continue
             }
 
@@ -165,7 +177,7 @@ function Select-NarvikNextBackup {
         }
 
         if (Test-NarvikBackoffActive -VmName $vm.Name -Now $now) {
-            Write-NarvikLog -Level DEBUG -Message "VM '$($vm.Name)' is in failure backoff; full backup skipped."
+            Write-NarvikLog -Level DEBUG -Message "VM '$($vm.Name)' is in failure backoff until $((Get-NarvikBackoffUntil -VmName $vm.Name).ToString('yyyy-MM-dd HH:mm:ss')); full backup skipped."
             continue
         }
 
