@@ -468,6 +468,11 @@ function Update-NarvikRuntimeConfig {
     $configPath = Join-Path $script:RootPath 'config.json'
 
     try {
+        # Missing files are reported by Import-NarvikConfig with its own message.
+        $configWriteTime = $null
+        if (Test-Path -LiteralPath $configPath -PathType Leaf) {
+            $configWriteTime = (Get-Item -LiteralPath $configPath).LastWriteTimeUtc
+        }
         $newConfig = Import-NarvikConfig -Path $configPath
 
         if (-not $newConfig.bypass_security) {
@@ -505,7 +510,16 @@ function Update-NarvikRuntimeConfig {
         }
 
         $script:VCenterFingerprint = $newFingerprint
+
+        # Logged when the file changed since the last accepted read, or when it is
+        # accepted again after a failed reload; not on every cycle.
+        if (($configWriteTime -ne $script:AcceptedConfigWriteTime) -or -not [string]::IsNullOrEmpty($script:LastConfigError)) {
+            Write-NarvikLog -Level INFO -Message "Configuration file accepted: '$configPath'."
+        }
+        $script:AcceptedConfigWriteTime = $configWriteTime
         $script:LastConfigError = ''
+        # A valid read resets the last-failure timestamp, so the next failure is emailed at once.
+        $script:LastConfigErrorMailTime = $null
     }
     catch {
         $errorMessage = $_.Exception.Message
@@ -524,6 +538,28 @@ function Update-NarvikRuntimeConfig {
         if ($errorMessage -ne $script:LastConfigError) {
             Write-NarvikLog -Level ERROR -Message "Configuration reload failed; keeping the previous configuration: $errorMessage"
             $script:LastConfigError = $errorMessage
+        }
+
+        # The config is re-read every cycle, so the email is limited by time (one per hour)
+        # regardless of whether the message changed. A failed send is retried next cycle.
+        $now = Get-Date
+        if ($null -eq $script:LastConfigErrorMailTime -or ($now - $script:LastConfigErrorMailTime).TotalHours -ge 1) {
+            $body = New-Object System.Text.StringBuilder
+            [void]$body.AppendLine('Narvik could not load the configuration file. The previous configuration is still in use.')
+            [void]$body.AppendLine('')
+            [void]$body.AppendLine("Error: $($errorMessage.Trim())")
+            [void]$body.AppendLine("Configuration file: $configPath")
+            if (-not [string]::IsNullOrWhiteSpace($script:LogFilePath)) {
+                [void]$body.AppendLine("Log file: $($script:LogFilePath)")
+            }
+            [void]$body.AppendLine("Host: $env:COMPUTERNAME")
+            [void]$body.AppendLine("Process ID: $PID")
+            [void]$body.AppendLine("Time: $($now.ToString('yyyy-MM-dd HH:mm:ss'))")
+
+            if (Send-NarvikMail -Subject '[Narvik] Configuration error - previous configuration kept' -Body $body.ToString()) {
+                $script:LastConfigErrorMailTime = $now
+                Write-NarvikLog -Level INFO -Message 'Configuration error email sent.'
+            }
         }
     }
 }

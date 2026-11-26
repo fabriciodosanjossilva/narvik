@@ -84,6 +84,10 @@ $script:Initialized = $false
 $script:ExitCode = 0
 $script:NonEligibleSignature = ''
 $script:LastConfigError = ''
+# Last-write time of the config.json that was accepted; a change triggers the INFO log.
+$script:AcceptedConfigWriteTime = $null
+# Time of the last configuration-error email; a new one is sent at most once per hour.
+$script:LastConfigErrorMailTime = $null
 # Set when tag collection aborted the inventory because the snapshot tag rule is
 # configured; the cache refresh consumes it and discards cached tag data.
 $script:TagRuleFailure = $false
