@@ -77,6 +77,7 @@ $script:ProcessLockStream = $null
 $script:ProcessLockFile = $null
 $script:StopRequested = $false
 $script:SuspendRequested = $false
+$script:FullWindowClosedLogged = $false
 $script:AbortRequested = $false
 $script:LastStatsLog = [datetime]::MinValue
 $script:LastStatsSignature = ''

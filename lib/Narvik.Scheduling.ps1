@@ -175,9 +175,15 @@ function Select-NarvikNextBackup {
     }
 
     if (-not (Test-NarvikFullBackupWindow -Now $now)) {
-        Write-NarvikLog -Level DEBUG -Message "Outside the full backup window for $($now.DayOfWeek) at $($now.ToString('HH:mm')) (now $($now.ToString('yyyy-MM-dd HH:mm:ss'))); no full backup will be started."
+        # The main loop calls this every cycle; log the closed window once and
+        # stay quiet until the window opens again.
+        if (-not $script:FullWindowClosedLogged) {
+            Write-NarvikLog -Level INFO -Message "Outside the full backup window for $($now.DayOfWeek) at $($now.ToString('HH:mm')); no full backup will be started."
+            $script:FullWindowClosedLogged = $true
+        }
         return $null
     }
+    $script:FullWindowClosedLogged = $false
 
     $fullCandidates = [System.Collections.Generic.List[object]]::new()
     foreach ($vm in @($script:EligibleVMs)) {
