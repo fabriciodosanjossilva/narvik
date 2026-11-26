@@ -121,6 +121,126 @@ function Test-NarvikFullBackupWindow {
     return $false
 }
 
+function Test-NarvikVmAllocable {
+    # Checks every rule that decides whether a VM may start a backup now.
+    # The one-backup-per-host rule is skipped when -AllowSharedHost is given;
+    # that is the fallback pass used once no other VM can be started.
+    # -Quiet suppresses the skip messages (used by the fallback pass, which
+    # repeats checks the strict pass has already logged).
+    param(
+        [Parameter(Mandatory = $true)]
+        $Vm,
+        [Parameter(Mandatory = $true)]
+        [datetime]$Now,
+        [Parameter(Mandatory = $true)]
+        [string]$Kind,
+        [switch]$AllowSharedHost,
+        [switch]$Quiet
+    )
+
+    if (Test-NarvikVmActive -VmName $Vm.Name) {
+        if (-not $Quiet) { Write-NarvikLog -Level DEBUG -Message "VM '$($Vm.Name)' already has an active $Kind; skipping." }
+        return $false
+    }
+
+    if ([string]::IsNullOrWhiteSpace($Vm.HostName)) {
+        if (-not $Quiet) { Write-NarvikLog -Level DEBUG -Message "VM '$($Vm.Name)' has no host information; $Kind will not be started." }
+        return $false
+    }
+
+    if (Test-NarvikBackoffActive -VmName $Vm.Name -Now $Now) {
+        if (-not $Quiet) { Write-NarvikLog -Level DEBUG -Message "VM '$($Vm.Name)' is in failure backoff until $((Get-NarvikBackoffUntil -VmName $Vm.Name).ToString('yyyy-MM-dd HH:mm:ss')); $Kind skipped." }
+        return $false
+    }
+
+    if (-not $AllowSharedHost) {
+        if (Test-NarvikHostActive -HostName $Vm.HostName) {
+            if (-not $Quiet) { Write-NarvikLog -Level DEBUG -Message "VM '$($Vm.Name)' shares host '$($Vm.HostName)' with an active backup; $Kind skipped." }
+            return $false
+        }
+    }
+    else {
+        $hostCount = Get-NarvikActiveJobCountForHost -HostName $Vm.HostName
+        if ($hostCount -ge $script:SharedHostMaxBackups) {
+            if (-not $Quiet) { Write-NarvikLog -Level DEBUG -Message "VM '$($Vm.Name)' is on host '$($Vm.HostName)', which already runs $hostCount backup(s) (limit $($script:SharedHostMaxBackups)); $Kind skipped." }
+            return $false
+        }
+    }
+
+    if (Test-NarvikClusterAtCapacity -Vm $Vm) {
+        if (-not $Quiet) { Write-NarvikLog -Level DEBUG -Message "VM '$($Vm.Name)' is in cluster '$($Vm.ClusterName)', which already has $(Get-NarvikClusterMaxThreadsSetting -ClusterName $Vm.ClusterName) active backup(s); $Kind skipped." }
+        return $false
+    }
+
+    return $true
+}
+
+function Get-NarvikActiveJobCountForHost {
+    param(
+        [string]$HostName
+    )
+
+    if ([string]::IsNullOrWhiteSpace($HostName)) {
+        return 0
+    }
+
+    $count = 0
+    foreach ($job in $script:ActiveJobs) {
+        if ([string]$job.HostName -ieq $HostName) {
+            $count++
+        }
+    }
+
+    return $count
+}
+
+function Write-NarvikSharedHostDebug {
+    # Logs, at DEBUG level, a concurrent backup started on a host that already
+    # runs another backup: the strict one-per-host pass found no candidate.
+    param(
+        [Parameter(Mandatory = $true)]
+        $Vm,
+        [Parameter(Mandatory = $true)]
+        [string]$Kind
+    )
+
+    $sharing = Get-NarvikActiveJobCountForHost -HostName $Vm.HostName
+    Write-NarvikLog -Level DEBUG -Message "Alocando backup concorrente em um mesmo host por não haver mais opções. $Kind of VM '$($Vm.Name)' on host '$($Vm.HostName)': active backups on this host $sharing/$($script:SharedHostMaxBackups)."
+}
+
+function Get-NarvikFullCandidates {
+    param(
+        [Parameter(Mandatory = $true)]
+        [datetime]$Now,
+        [switch]$AllowSharedHost,
+        [switch]$Quiet
+    )
+
+    $candidates = [System.Collections.Generic.List[object]]::new()
+    foreach ($vm in @($script:EligibleVMs)) {
+        if (-not (Test-NarvikVmAllocable -Vm $vm -Now $Now -Kind 'full backup' -AllowSharedHost:$AllowSharedHost -Quiet:$Quiet)) {
+            continue
+        }
+
+        $lastFull = $null
+        if ($script:LastFull.ContainsKey($vm.Name)) {
+            $lastFull = $script:LastFull[$vm.Name]
+        }
+        if ($null -eq $lastFull) {
+            $lastFull = $Now.AddYears(-1)
+        }
+
+        if ($lastFull -lt $Now.AddDays(-30)) {
+            [void]$candidates.Add([pscustomobject]@{
+                VM       = $vm
+                LastFull = $lastFull
+            })
+        }
+    }
+
+    return ,@($candidates)
+}
+
 function Select-NarvikNextBackup {
     if ($null -eq $script:VCache -or @($script:EligibleVMs).Count -eq 0) {
         return $null
@@ -133,45 +253,46 @@ function Select-NarvikNextBackup {
     $script:PendingVMs = $pending
 
     if ($pending.Count -gt 0) {
+        # Strict pass: one backup per ESXi host.
+        $selectedVm = $null
+        $shared = $false
         foreach ($vm in $pending) {
-            if (Test-NarvikVmActive -VmName $vm.Name) {
-                Write-NarvikLog -Level DEBUG -Message "VM '$($vm.Name)' already has an active backup; skipping."
-                continue
-            }
-
-            if ([string]::IsNullOrWhiteSpace($vm.HostName)) {
-                Write-NarvikLog -Level DEBUG -Message "VM '$($vm.Name)' has no host information; backup will not be started."
-                continue
-            }
-
-            if (Test-NarvikBackoffActive -VmName $vm.Name -Now $now) {
-                Write-NarvikLog -Level DEBUG -Message "VM '$($vm.Name)' is in failure backoff until $((Get-NarvikBackoffUntil -VmName $vm.Name).ToString('yyyy-MM-dd HH:mm:ss')); skipping."
-                continue
-            }
-
-            if (Test-NarvikHostActive -HostName $vm.HostName) {
-                Write-NarvikLog -Level DEBUG -Message "VM '$($vm.Name)' shares host '$($vm.HostName)' with an active backup; skipping."
-                continue
-            }
-
-            if (Test-NarvikClusterAtCapacity -Vm $vm) {
-                Write-NarvikLog -Level DEBUG -Message "VM '$($vm.Name)' is in cluster '$($vm.ClusterName)', which already has $(Get-NarvikClusterMaxThreadsSetting -ClusterName $vm.ClusterName) active backup(s); skipping."
-                continue
-            }
-
-            $forceFull = $script:DuplicateGuid.ContainsKey($vm.Name)
-            if ($forceFull) {
-                Write-NarvikLog -Level DEBUG -Message "VM '$($vm.Name)' has the duplicate GUID flag; the next backup will use -VMBACKUPUPDATEGUID and -mode IFFull."
-            }
-            return [pscustomobject]@{
-                VM        = $vm
-                Mode      = 'Incremental'
-                IsFull    = [bool]$forceFull
-                ForceFull = [bool]$forceFull
+            if (Test-NarvikVmAllocable -Vm $vm -Now $now -Kind 'backup') {
+                $selectedVm = $vm
+                break
             }
         }
 
-        return $null
+        # Fallback pass: only when no pending VM can start under the strict rule.
+        # Every other check still applies; only the host rule is relaxed.
+        if ($null -eq $selectedVm) {
+            foreach ($vm in $pending) {
+                if (Test-NarvikVmAllocable -Vm $vm -Now $now -Kind 'backup' -AllowSharedHost -Quiet) {
+                    $selectedVm = $vm
+                    $shared = Test-NarvikHostActive -HostName $vm.HostName
+                    break
+                }
+            }
+        }
+
+        if ($null -eq $selectedVm) {
+            return $null
+        }
+
+        if ($shared) {
+            Write-NarvikSharedHostDebug -Vm $selectedVm -Kind 'Backup'
+        }
+
+        $forceFull = $script:DuplicateGuid.ContainsKey($selectedVm.Name)
+        if ($forceFull) {
+            Write-NarvikLog -Level DEBUG -Message "VM '$($selectedVm.Name)' has the duplicate GUID flag; the next backup will use -VMBACKUPUPDATEGUID and -mode IFFull."
+        }
+        return [pscustomobject]@{
+            VM        = $selectedVm
+            Mode      = 'Incremental'
+            IsFull    = [bool]$forceFull
+            ForceFull = [bool]$forceFull
+        }
     }
 
     if (-not (Test-NarvikFullBackupWindow -Now $now)) {
@@ -185,47 +306,12 @@ function Select-NarvikNextBackup {
     }
     $script:FullWindowClosedLogged = $false
 
-    $fullCandidates = [System.Collections.Generic.List[object]]::new()
-    foreach ($vm in @($script:EligibleVMs)) {
-        if (Test-NarvikVmActive -VmName $vm.Name) {
-            Write-NarvikLog -Level DEBUG -Message "VM '$($vm.Name)' already has an active backup; full backup skipped."
-            continue
-        }
-
-        if ([string]::IsNullOrWhiteSpace($vm.HostName)) {
-            Write-NarvikLog -Level DEBUG -Message "VM '$($vm.Name)' has no host information; full backup will not be started."
-            continue
-        }
-
-        if (Test-NarvikBackoffActive -VmName $vm.Name -Now $now) {
-            Write-NarvikLog -Level DEBUG -Message "VM '$($vm.Name)' is in failure backoff until $((Get-NarvikBackoffUntil -VmName $vm.Name).ToString('yyyy-MM-dd HH:mm:ss')); full backup skipped."
-            continue
-        }
-
-        if (Test-NarvikHostActive -HostName $vm.HostName) {
-            Write-NarvikLog -Level DEBUG -Message "VM '$($vm.Name)' shares host '$($vm.HostName)' with an active backup; full backup skipped."
-            continue
-        }
-
-        if (Test-NarvikClusterAtCapacity -Vm $vm) {
-            Write-NarvikLog -Level DEBUG -Message "VM '$($vm.Name)' is in cluster '$($vm.ClusterName)', which already has $(Get-NarvikClusterMaxThreadsSetting -ClusterName $vm.ClusterName) active backup(s); full backup skipped."
-            continue
-        }
-
-        $lastFull = $null
-        if ($script:LastFull.ContainsKey($vm.Name)) {
-            $lastFull = $script:LastFull[$vm.Name]
-        }
-        if ($null -eq $lastFull) {
-            $lastFull = $now.AddYears(-1)
-        }
-
-        if ($lastFull -lt $now.AddDays(-30)) {
-            [void]$fullCandidates.Add([pscustomobject]@{
-                VM       = $vm
-                LastFull = $lastFull
-            })
-        }
+    # Strict pass first; the fallback pass only runs when it finds nothing.
+    $fullCandidates = Get-NarvikFullCandidates -Now $now
+    $shared = $false
+    if ($fullCandidates.Count -eq 0) {
+        $fullCandidates = Get-NarvikFullCandidates -Now $now -AllowSharedHost -Quiet
+        $shared = $true
     }
 
     if ($fullCandidates.Count -eq 0) {
@@ -237,6 +323,10 @@ function Select-NarvikNextBackup {
     # priority comes next and the oldest full backup breaks ties before the
     # folder path and the name.
     $selected = @($fullCandidates | Sort-Object -Property @{ Expression = { [int]$_.VM.ClusterPriority }; Descending = $true }, @{ Expression = { [int]$_.VM.ResourcePoolPriority }; Descending = $true }, LastFull, @{ Expression = { $_.VM.FolderPath } }, @{ Expression = { $_.VM.Name } } | Select-Object -First 1)[0]
+
+    if ($shared -and (Test-NarvikHostActive -HostName $selected.VM.HostName)) {
+        Write-NarvikSharedHostDebug -Vm $selected.VM -Kind 'Full backup'
+    }
 
     return [pscustomobject]@{
         VM        = $selected.VM

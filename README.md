@@ -50,8 +50,14 @@ Narvik is a backup automation for "IBM Storage Protect for VMWare" on Windows Se
   root directory. It must exist and have a `.exe` extension; the process starts with
   the executable's own folder as its working directory.
 - Concurrency control: caps simultaneous `dsmc` processes
-  (`max_backup_threads`) and never starts two backups on the same ESXi host
-  at the same time.
+  (`max_backup_threads`) and, by default, never starts two backups on the same
+  ESXi host at the same time. Fallback: when no other VM can be started (every
+  remaining candidate is blocked only by the one-per-host rule), a VM on a host
+  that already runs a backup may start anyway, so the last VMs of a large run do
+  not queue one after another. The host may run at most 4 backups in total,
+  counting the running ones. The other rules (global limit, cluster cap, backoff,
+  already active) still apply. Each concurrent backup started this way is logged
+  at DEBUG level. The fallback applies to incremental and full backups.
 - Cluster and resource pool priority, with caps: `priority_clusters` assigns
   each ESXi cluster an integer priority from -100 to 100; `priority_resource_pools`
   assigns a priority to a resource pool inside a named cluster; and

@@ -62,6 +62,9 @@ $script:DiskSizeCases = @()
 $script:LastFull = @{}
 $script:IndependentDisks = @()
 $script:DuplicateGuid = @{}
+# Maximum simultaneous backups on one ESXi host when the one-per-host rule is
+# relaxed as a fallback (see Test-NarvikVmAllocable). Counts the running ones.
+$script:SharedHostMaxBackups = 4
 # Error codes that are always reported by email when found in dsmc output.
 $script:CriticalAnsErrors = @('ANS1030E', 'ANS1706E', 'ANS4169E', 'ANS4200E')
 $script:State = @{

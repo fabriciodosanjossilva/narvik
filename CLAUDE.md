@@ -173,7 +173,11 @@ Inventory and eligibility:
 - `Select-NarvikNextBackup` orders pending VMs by cluster priority, then resource pool
   priority, then full folder path, respecting per-cluster thread caps
   (`Test-NarvikClusterAtCapacity`), the one-backup-per-ESXi-host rule
-  (`Test-NarvikHostActive`), and failure backoff (`Test-NarvikBackoffActive`).
+  (`Test-NarvikHostActive`), and failure backoff (`Test-NarvikBackoffActive`). All
+  these checks live in `Test-NarvikVmAllocable`. If the strict pass (one backup per
+  host) finds nothing, a fallback pass repeats the checks with the host rule relaxed,
+  allowing up to `$script:SharedHostMaxBackups` (4, set in `Narvik.ps1`) running
+  backups per host in total.
 
 Backup execution:
 - `Start-NarvikBackupJob` builds the `dsmc backup vm` command line (quoting via
