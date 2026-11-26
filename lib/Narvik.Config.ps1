@@ -44,6 +44,7 @@ function Import-NarvikConfig {
         'smtp_server',
         'smtp_port',
         'smtp_use_ssl',
+        'smtp_ignore_certificate',
         'smtp_username',
         'smtp_password_file',
         'mail_from',
@@ -352,6 +353,7 @@ function Import-NarvikConfig {
     $smtpServer = [string](Get-NarvikConfigValue -Config $config -Key 'smtp_server' -Default '')
     $smtpPort = 25
     $smtpUseSsl = $false
+    $smtpIgnoreCertificate = $false
     $smtpUsername = ''
     $smtpPasswordFile = $null
     $mailFrom = ''
@@ -370,6 +372,7 @@ function Import-NarvikConfig {
         }
 
         $smtpUseSsl = ConvertTo-NarvikBoolean -Value (Get-NarvikConfigValue -Config $config -Key 'smtp_use_ssl' -Default $false) -KeyName 'smtp_use_ssl'
+        $smtpIgnoreCertificate = ConvertTo-NarvikBoolean -Value (Get-NarvikConfigValue -Config $config -Key 'smtp_ignore_certificate' -Default $false) -KeyName 'smtp_ignore_certificate'
         $smtpUsername = [string](Get-NarvikConfigValue -Config $config -Key 'smtp_username' -Default '')
         $smtpPasswordFileValue = [string](Get-NarvikConfigValue -Config $config -Key 'smtp_password_file' -Default '')
         if (-not [string]::IsNullOrWhiteSpace($smtpPasswordFileValue)) {
@@ -438,6 +441,7 @@ function Import-NarvikConfig {
         smtp_server                           = $smtpServer
         smtp_port                             = $smtpPort
         smtp_use_ssl                          = $smtpUseSsl
+        smtp_ignore_certificate               = $smtpIgnoreCertificate
         smtp_username                         = $smtpUsername
         smtp_password_file                    = $smtpPasswordFile
         mail_from                             = $mailFrom

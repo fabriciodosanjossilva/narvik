@@ -97,7 +97,8 @@ Narvik is a backup automation for "IBM Storage Protect for VMWare" on Windows Se
 - Email alerts: duplicate names, inventory rule violations, disk sizes not
   aligned to 1 MiB, independent disks, critical dsmc errors and fatal errors
   are mailed through SMTP (optional SSL and authentication, credentials read
-  from files); a fatal exit attaches the full log.
+  from files; `smtp_ignore_certificate` skips validation of the SMTP server
+  certificate, default `false`); a fatal exit attaches the full log.
 - Monitoring hooks: writes `eligible_count.txt`, `eligible_vms.txt` and
   `pending_count.txt` so external tooling can watch the queue.
 - Logs: one log per VM backup plus a daily-rotated main log; the configuration

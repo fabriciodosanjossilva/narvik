@@ -366,7 +366,7 @@ function Start-NarvikBackupJob {
         $modeText = 'Full'
     }
 
-    Write-NarvikLog -Level DEBUG -Message "Executing $modeText backup for VM '$($vm.Name)' with working directory '$($script:Config.dsmc_dir)': $commandLine"
+    Write-NarvikLog -Level DEBUG -Message "Executing dsmc in $modeText backup mode for VM '$($vm.Name)' with working directory '$($script:Config.dsmc_dir)': $commandLine"
 
     # WorkingDirectory applies only to this child process; the daemon's own location is unchanged.
     $startParameters = @{

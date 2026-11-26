@@ -48,7 +48,22 @@ function Send-NarvikMail {
             $parameters.Attachments = $Attachments
         }
 
-        Send-MailMessage @parameters
+        # Send-MailMessage only exposes certificate validation through the process-wide
+        # ServicePointManager callback, so it is replaced just for this send and restored
+        # right after (the PowerCLI connection uses the same callback).
+        if ($script:Config.smtp_ignore_certificate) {
+            $previousCallback = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
+            [System.Net.ServicePointManager]::ServerCertificateValidationCallback = [System.Net.Security.RemoteCertificateValidationCallback]{ param($sender, $certificate, $chain, $errors) return $true }
+            try {
+                Send-MailMessage @parameters
+            }
+            finally {
+                [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $previousCallback
+            }
+        }
+        else {
+            Send-MailMessage @parameters
+        }
         return $true
     }
     catch {
@@ -99,6 +114,14 @@ function Get-NarvikFallbackSmtpConfig {
         $useSsl = $true
     }
 
+    $ignoreCertificate = $false
+    if ($object.smtp_ignore_certificate -is [bool]) {
+        $ignoreCertificate = [bool]$object.smtp_ignore_certificate
+    }
+    elseif ([string]$object.smtp_ignore_certificate -ieq 'true') {
+        $ignoreCertificate = $true
+    }
+
     $username = [string]$object.smtp_username
     $passwordFileValue = [string]$object.smtp_password_file
     $passwordFile = $null
@@ -114,7 +137,8 @@ function Get-NarvikFallbackSmtpConfig {
     return [pscustomobject]@{
         smtp_server        = $smtpServer
         smtp_port          = $port
-        smtp_use_ssl       = $useSsl
+        smtp_use_ssl           = $useSsl
+        smtp_ignore_certificate = $ignoreCertificate
         smtp_username      = $username
         smtp_password_file = $passwordFile
         mail_from          = $mailFrom

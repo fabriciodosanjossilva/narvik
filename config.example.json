@@ -29,6 +29,7 @@
   "smtp_server": "mail.example.local",
   "smtp_port": 25,
   "smtp_use_ssl": false,
+  "smtp_ignore_certificate": false,
   "smtp_username": "",
   "smtp_password_file": "",
   "mail_from": "narvik@example.local",
