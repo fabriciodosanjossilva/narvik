@@ -49,5 +49,6 @@
     "thursday",
     "friday"
   ],
-  "full_backup_limited_until": "08:00"
+  "full_backup_limited_until": "08:00",
+  "full_backup_max_age_days": 30
 }

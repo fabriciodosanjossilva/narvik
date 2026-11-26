@@ -217,6 +217,12 @@ function Get-NarvikFullCandidates {
     )
 
     $candidates = [System.Collections.Generic.List[object]]::new()
+    # Without 'full_backup_max_age_days' no automatic full backup is scheduled.
+    if ($null -eq $script:Config.full_backup_max_age_days) {
+        return ,@($candidates)
+    }
+    $maxAgeDays = [int]$script:Config.full_backup_max_age_days
+
     foreach ($vm in @($script:EligibleVMs)) {
         if (-not (Test-NarvikVmAllocable -Vm $vm -Now $Now -Kind 'full backup' -AllowSharedHost:$AllowSharedHost -Quiet:$Quiet)) {
             continue
@@ -230,7 +236,7 @@ function Get-NarvikFullCandidates {
             $lastFull = $Now.AddYears(-1)
         }
 
-        if ($lastFull -lt $Now.AddDays(-30)) {
+        if ($lastFull -lt $Now.AddDays(-$maxAgeDays)) {
             [void]$candidates.Add([pscustomobject]@{
                 VM       = $vm
                 LastFull = $lastFull
@@ -295,6 +301,11 @@ function Select-NarvikNextBackup {
         }
     }
 
+    # No automatic full backups unless 'full_backup_max_age_days' is configured.
+    if ($null -eq $script:Config.full_backup_max_age_days) {
+        return $null
+    }
+
     if (-not (Test-NarvikFullBackupWindow -Now $now)) {
         # The main loop calls this every cycle; log the closed window once and
         # stay quiet until the window opens again.
@@ -315,7 +326,7 @@ function Select-NarvikNextBackup {
     }
 
     if ($fullCandidates.Count -eq 0) {
-        Write-NarvikLog -Level DEBUG -Message 'No eligible VM is due for a full backup; every recorded full backup is newer than 30 days.'
+        Write-NarvikLog -Level DEBUG -Message "No eligible VM is due for a full backup; every recorded full backup is newer than $($script:Config.full_backup_max_age_days) day(s)."
         return $null
     }
 

@@ -100,6 +100,7 @@ function Import-NarvikConfig {
         'full_backup_unrestricted_days',
         'full_backup_limited_days',
         'full_backup_limited_until',
+        'full_backup_max_age_days',
         'incremental_baseline_time'
     )
 
@@ -488,6 +489,22 @@ function Import-NarvikConfig {
         $fullBackupLimitedUntil = ConvertTo-NarvikConfigTime -Value $limitedUntilValue -Key 'full_backup_limited_until'
     }
 
+    # Maximum age in days of the last full backup before a new full is due. Optional:
+    # when absent, no automatic full backup is scheduled at all. When present it must
+    # be a positive integer.
+    $fullBackupMaxAgeDays = $null
+    $fullBackupMaxAgeValue = Get-NarvikConfigValue -Config $config -Key 'full_backup_max_age_days'
+    if ($null -ne $fullBackupMaxAgeValue) {
+        $maxAgeText = ([string]$fullBackupMaxAgeValue).Trim()
+        if ($maxAgeText -notmatch '^[0-9]+$') {
+            throw [System.Exception]::new("Configuration key 'full_backup_max_age_days' must be a positive integer, not '$maxAgeText'.")
+        }
+        $fullBackupMaxAgeDays = [int]$maxAgeText
+        if ($fullBackupMaxAgeDays -lt 1) {
+            throw [System.Exception]::new("Configuration key 'full_backup_max_age_days' must be at least 1.")
+        }
+    }
+
     # Nightly baseline for incremental backups: a VM is pending when its last
     # backup is older than the most recent occurrence of this time. Always required.
     $incrementalBaselineTime = ConvertTo-NarvikConfigTime -Value (Get-NarvikConfigValue -Config $config -Key 'incremental_baseline_time' -Required) -Key 'incremental_baseline_time'
@@ -523,6 +540,7 @@ function Import-NarvikConfig {
         full_backup_unrestricted_days         = $fullBackupUnrestrictedDays
         full_backup_limited_days              = $fullBackupLimitedDays
         full_backup_limited_until             = $fullBackupLimitedUntil
+        full_backup_max_age_days              = $fullBackupMaxAgeDays
         incremental_baseline_time             = $incrementalBaselineTime
     }
 }

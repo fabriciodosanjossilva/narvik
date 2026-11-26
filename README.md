@@ -34,8 +34,8 @@ Narvik is a backup automation for "IBM Storage Protect for VMWare" on Windows Se
   spaces. A Full block also counts as the last incremental.
 - Automatic full backups: repeats an "Incremental Forever - Full" backup when
   the last full, read from a Notes block whose `Type` ends in `- Full` or
-  recorded after a successful full backup, is more than 30 days old, only
-  only inside the full backup window and always oldest first; incrementals take
+  recorded after a successful full backup, is more than `full_backup_max_age_days`
+  days old, only inside the full backup window and always oldest first; incrementals take
   priority over fulls. The window is set by three keys:
   `full_backup_unrestricted_days` (day names such as `"saturday"`, matched
   case-insensitively, full backups allowed all day), `full_backup_limited_days`
@@ -45,6 +45,9 @@ Narvik is a backup automation for "IBM Storage Protect for VMWare" on Windows Se
   is required only when `full_backup_limited_days` has at least one day; otherwise
   it is ignored, even when present. Each day may appear in only one list, and a
   day in neither list never gets a full backup. Not all seven days need to be listed.
+  `full_backup_max_age_days` is optional: a positive integer (at least 1). When it
+  is absent, no automatic full backup is scheduled at all. A full forced by the
+  duplicate GUID rule (ANS1715E) still runs regardless of this key.
 - dsmc options: `dsmc_opt_file` adds `-optfile=<file>` to the backup command
   and `dsmc_asnodename` adds `-asnodename=<name>`. Both are optional and are
   omitted from the command line when not configured.
