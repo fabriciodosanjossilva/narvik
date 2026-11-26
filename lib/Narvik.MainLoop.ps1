@@ -27,6 +27,18 @@ function Invoke-NarvikControlFiles {
             Write-NarvikLog -Level WARNING -Message "Could not remove stop control file '$stopFile': $($_.Exception.Message)"
         }
     }
+
+    # suspend.txt is never deleted by Narvik; the operator removes it to resume.
+    $suspendFile = Join-Path $script:RootPath 'suspend.txt'
+    $suspendPresent = Test-Path -LiteralPath $suspendFile -PathType Leaf
+    if ($suspendPresent -and -not $script:SuspendRequested) {
+        $script:SuspendRequested = $true
+        Write-NarvikLog -Level INFO -Message 'Suspend control file detected; no new backups (incremental or full) will be started while it exists. Active backups continue.'
+    }
+    elseif (-not $suspendPresent -and $script:SuspendRequested) {
+        $script:SuspendRequested = $false
+        Write-NarvikLog -Level INFO -Message 'Suspend control file removed; new backups may be started again.'
+    }
 }
 
 function Invoke-NarvikMain {
@@ -64,10 +76,16 @@ function Invoke-NarvikMain {
         }
         else {
             $startedAny = $false
-            if ($script:ActiveJobs.Count -ge $script:Config.max_backup_threads) {
+            if ($script:SuspendRequested) {
+                $suspendedSelection = Select-NarvikNextBackup
+                if ($null -ne $suspendedSelection) {
+                    Write-NarvikLog -Level INFO -Message "Suspend control file present; $($suspendedSelection.Mode) backup for VM '$($suspendedSelection.VM.Name)' is allocable but was not started."
+                }
+            }
+            elseif ($script:ActiveJobs.Count -ge $script:Config.max_backup_threads) {
                 Write-NarvikLog -Level DEBUG -Message "Global backup limit reached ($($script:ActiveJobs.Count) of $($script:Config.max_backup_threads) active); no new backup will be started this cycle."
             }
-            while ($script:ActiveJobs.Count -lt $script:Config.max_backup_threads) {
+            while (-not $script:SuspendRequested -and $script:ActiveJobs.Count -lt $script:Config.max_backup_threads) {
                 $selection = Select-NarvikNextBackup
                 if ($null -eq $selection) {
                     break

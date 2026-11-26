@@ -49,6 +49,8 @@ is the spec.
 - Operator control files, placed directly in the root directory while the daemon is
   running: `stop.txt` (graceful — finish active backups, then exit) and `abort.txt`
   (immediate — kill active backups and exit). Both are deleted by Narvik once acted on.
+  `suspend.txt` blocks the start of new backups (incremental and full) while active ones
+  continue; it is never deleted by Narvik — the operator removes it to resume.
 - There is no test runner. `dsmc_path` in `config.json` is either an absolute path or a
   path relative to the root directory, and must point to an existing `.exe` file. Narvik
   runs `dsmc` with its own folder as the working directory (set on the child process only).

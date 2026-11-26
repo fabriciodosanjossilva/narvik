@@ -6,7 +6,10 @@ Narvik is a backup automation for "IBM Storage Protect for VMWare" on Windows Se
 
 - Unattended daemon: runs continuously, no external scheduler needed.
   Stopping is graceful: `stop.txt` lets active backups finish, `abort.txt`
-  kills them and exits immediately.
+  kills them and exits immediately. `suspend.txt` pauses the start of new
+  backups (incremental and full) while active ones keep running; Narvik does
+  not delete it, the operator removes it to resume. While it exists and a VM
+  is allocable, each main-loop cycle logs an INFO line.
 - Automatic inventory: reads VMs, templates, hosts, datastore clusters, VM
   folders, datacenters, datastores and hard disks, using only VMFS datastores;
   other datastore types and non-VM folders are ignored. VM folder paths include
@@ -30,8 +33,16 @@ Narvik is a backup automation for "IBM Storage Protect for VMWare" on Windows Se
 - Automatic full backups: repeats an "Incremental Forever - Full" backup when
   the last full, read from a Notes block whose `Type` ends in `- Full` or
   recorded after a successful full backup, is more than 30 days old, only
-  during the off-hours window (weekends or before 08:00) and always oldest
-  first; incrementals take priority over fulls.
+  only inside the full backup window and always oldest first; incrementals take
+  priority over fulls. The window is set by three keys:
+  `full_backup_unrestricted_days` (day names such as `"saturday"`, matched
+  case-insensitively, full backups allowed all day), `full_backup_limited_days`
+  (full backups allowed only before `full_backup_limited_until`, a 24-hour
+  `HH:mm` local time from `00:00` to `23:59`, shared by all these days) and the
+  time itself. Both day lists are required but may be empty. `full_backup_limited_until`
+  is required only when `full_backup_limited_days` has at least one day; otherwise
+  it is ignored, even when present. Each day may appear in only one list, and a
+  day in neither list never gets a full backup. Not all seven days need to be listed.
 - dsmc options: `dsmc_opt_file` adds `-optfile=<file>` to the backup command
   and `dsmc_asnodename` adds `-asnodename=<name>`. Both are optional and are
   omitted from the command line when not configured.

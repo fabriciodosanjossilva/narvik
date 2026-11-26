@@ -1,3 +1,34 @@
+function Get-NarvikConfigDayList {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Config,
+        [Parameter(Mandatory = $true)]
+        [string]$Key
+    )
+
+    # Day names are full English names of System.DayOfWeek, matched case-insensitively.
+    $value = Get-NarvikConfigValue -Config $Config -Key $Key -Required
+    $dayNames = [System.Enum]::GetNames([System.DayOfWeek])
+    $days = [System.Collections.Generic.List[System.DayOfWeek]]::new()
+    foreach ($item in @($value)) {
+        if ($item -isnot [string]) {
+            throw [System.Exception]::new("Configuration key '$Key' must contain day names as strings.")
+        }
+        $name = $item.Trim()
+        $match = $dayNames | Where-Object { $_ -ieq $name } | Select-Object -First 1
+        if ($null -eq $match) {
+            throw [System.Exception]::new("Configuration key '$Key' contains an invalid day name '$name'; use full English names such as 'saturday'.")
+        }
+        $day = [System.Enum]::Parse([System.DayOfWeek], $match)
+        if ($days.Contains($day)) {
+            throw [System.Exception]::new("Configuration key '$Key' contains the day '$match' more than once.")
+        }
+        $days.Add($day)
+    }
+
+    return , $days.ToArray()
+}
+
 function Import-NarvikConfig {
     param(
         [string]$Path
@@ -49,7 +80,10 @@ function Import-NarvikConfig {
         'smtp_password_file',
         'mail_from',
         'mail_to',
-        'max_backup_threads'
+        'max_backup_threads',
+        'full_backup_unrestricted_days',
+        'full_backup_limited_days',
+        'full_backup_limited_until'
     )
 
     foreach ($propertyName in $config.PSObject.Properties.Name) {
@@ -419,6 +453,27 @@ function Import-NarvikConfig {
         throw [System.Exception]::new("Configuration key 'max_backup_threads' must be at least 1.")
     }
 
+    # Full backup window. A day listed in neither list gets no full backup; a day
+    # may appear in only one of the two lists.
+    $fullBackupUnrestrictedDays = Get-NarvikConfigDayList -Config $config -Key 'full_backup_unrestricted_days'
+    $fullBackupLimitedDays = Get-NarvikConfigDayList -Config $config -Key 'full_backup_limited_days'
+    foreach ($day in $fullBackupUnrestrictedDays) {
+        if ($fullBackupLimitedDays -contains $day) {
+            throw [System.Exception]::new("Day '$day' appears in both 'full_backup_unrestricted_days' and 'full_backup_limited_days'.")
+        }
+    }
+
+    # The time is only read when at least one limited day exists; otherwise it is
+    # ignored entirely, even when present.
+    $fullBackupLimitedUntil = $null
+    if ($fullBackupLimitedDays.Count -gt 0) {
+        $limitedUntilValue = [string](Get-NarvikConfigValue -Config $config -Key 'full_backup_limited_until' -Required)
+        if ($limitedUntilValue -notmatch '^([01][0-9]|2[0-3]):[0-5][0-9]$') {
+            throw [System.Exception]::new("Configuration key 'full_backup_limited_until' must be a time in HH:mm format from 00:00 to 23:59, not '$limitedUntilValue'.")
+        }
+        $fullBackupLimitedUntil = [TimeSpan]::new([int]$limitedUntilValue.Substring(0, 2), [int]$limitedUntilValue.Substring(3, 2), 0)
+    }
+
     return [pscustomobject]@{
         debug                                 = $debug
         check_administrator_privilege         = $checkAdministratorPrivilege
@@ -447,6 +502,9 @@ function Import-NarvikConfig {
         mail_from                             = $mailFrom
         mail_to                               = $mailTo
         max_backup_threads                    = $maxThreads
+        full_backup_unrestricted_days         = $fullBackupUnrestrictedDays
+        full_backup_limited_days              = $fullBackupLimitedDays
+        full_backup_limited_until             = $fullBackupLimitedUntil
     }
 }
 

@@ -36,5 +36,17 @@
   "mail_to": [
     "backup-admins@example.local"
   ],
-  "max_backup_threads": 2
+  "max_backup_threads": 2,
+  "full_backup_unrestricted_days": [
+    "saturday",
+    "sunday"
+  ],
+  "full_backup_limited_days": [
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday"
+  ],
+  "full_backup_limited_until": "08:00"
 }

@@ -104,6 +104,23 @@ function Test-NarvikBackoffActive {
     return ($Now -lt $nextAttempt)
 }
 
+function Test-NarvikFullBackupWindow {
+    param(
+        [Parameter(Mandatory = $true)]
+        [datetime]$Now
+    )
+
+    # Unrestricted days allow full backups all day; limited days only before
+    # 'full_backup_limited_until'. A day in neither list never gets a full backup.
+    if ($script:Config.full_backup_unrestricted_days -contains $Now.DayOfWeek) {
+        return $true
+    }
+    if ($script:Config.full_backup_limited_days -contains $Now.DayOfWeek -and $Now.TimeOfDay -lt $script:Config.full_backup_limited_until) {
+        return $true
+    }
+    return $false
+}
+
 function Select-NarvikNextBackup {
     if ($null -eq $script:VCache -or @($script:EligibleVMs).Count -eq 0) {
         return $null
@@ -157,10 +174,8 @@ function Select-NarvikNextBackup {
         return $null
     }
 
-    $isWeekend = ($now.DayOfWeek -eq [System.DayOfWeek]::Saturday -or $now.DayOfWeek -eq [System.DayOfWeek]::Sunday)
-    $isBeforeEight = ($now.TimeOfDay -lt [TimeSpan]'08:00:00')
-    if (-not $isWeekend -and -not $isBeforeEight) {
-        Write-NarvikLog -Level DEBUG -Message "Full backups are only attempted on weekends or before 08:00; it is now $($now.ToString('yyyy-MM-dd HH:mm:ss')); no full backup will be started."
+    if (-not (Test-NarvikFullBackupWindow -Now $now)) {
+        Write-NarvikLog -Level DEBUG -Message "Outside the full backup window for $($now.DayOfWeek) at $($now.ToString('HH:mm')) (now $($now.ToString('yyyy-MM-dd HH:mm:ss'))); no full backup will be started."
         return $null
     }
 
