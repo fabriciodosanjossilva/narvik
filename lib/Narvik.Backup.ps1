@@ -4,7 +4,9 @@ function ConvertTo-NarvikDsmcVmName {
         [string]$Name
     )
 
-    return [regex]::Replace($Name, '[,./]+', '*')
+    # Non-ASCII characters (accents and other Unicode) are written as \u escapes so the
+    # file stays pure ASCII regardless of how Windows PowerShell 5.1 decodes the script.
+    return [regex]::Replace($Name, '[/\u0080-\uFFFF]+', '*')
 }
 
 function ConvertTo-NarvikFileName {
