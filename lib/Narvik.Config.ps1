@@ -492,9 +492,10 @@ function Import-NarvikConfig {
     # Maximum age in days of the last full backup before a new full is due. Optional:
     # when absent, no automatic full backup is scheduled at all. When present it must
     # be a positive integer.
+    # An empty string counts as absent.
     $fullBackupMaxAgeDays = $null
     $fullBackupMaxAgeValue = Get-NarvikConfigValue -Config $config -Key 'full_backup_max_age_days'
-    if ($null -ne $fullBackupMaxAgeValue) {
+    if ($null -ne $fullBackupMaxAgeValue -and -not [string]::IsNullOrWhiteSpace([string]$fullBackupMaxAgeValue)) {
         $maxAgeText = ([string]$fullBackupMaxAgeValue).Trim()
         if ($maxAgeText -notmatch '^[0-9]+$') {
             throw [System.Exception]::new("Configuration key 'full_backup_max_age_days' must be a positive integer, not '$maxAgeText'.")

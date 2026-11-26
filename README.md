@@ -46,7 +46,7 @@ Narvik is a backup automation for "IBM Storage Protect for VMWare" on Windows Se
   it is ignored, even when present. Each day may appear in only one list, and a
   day in neither list never gets a full backup. Not all seven days need to be listed.
   `full_backup_max_age_days` is optional: a positive integer (at least 1). When it
-  is absent, no automatic full backup is scheduled at all. A full forced by the
+  is absent or an empty string, no automatic full backup is scheduled at all. A full forced by the
   duplicate GUID rule (ANS1715E) still runs regardless of this key.
 - dsmc options: `dsmc_opt_file` adds `-optfile=<file>` to the backup command
   and `dsmc_asnodename` adds `-asnodename=<name>`. Both are optional and are
