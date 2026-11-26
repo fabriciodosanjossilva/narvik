@@ -37,6 +37,7 @@
     "backup-admins@example.local"
   ],
   "max_backup_threads": 2,
+  "incremental_baseline_time": "20:00",
   "full_backup_unrestricted_days": [
     "saturday",
     "sunday"

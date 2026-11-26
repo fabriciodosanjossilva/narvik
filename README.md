@@ -26,7 +26,9 @@ Narvik is a backup automation for "IBM Storage Protect for VMWare" on Windows Se
   Protect management class, so the backup policy follows where the VM lives.
 - Incremental backups: backs up any eligible VM whose last incremental
   backup, read from the `<Last Backup (IBM Spectrum Protect)>` block that
-  `dsmc` writes to the VM Notes, is older than the nightly 20:00 baseline.
+  `dsmc` writes to the VM Notes, is older than the nightly baseline. The baseline
+  time is set by `incremental_baseline_time` (`HH:mm` local time, `00:00` to `23:59`,
+  required); before that time of day the baseline is the previous day's occurrence.
   The block must contain `Status='Successful'`, a `Last Run Time` in
   `MM/DD/YYYY HH:MM:SS` format and a `Type`; line endings are treated as
   spaces. A Full block also counts as the last incremental.

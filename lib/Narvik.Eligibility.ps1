@@ -3,11 +3,13 @@ function Get-NarvikBaseline {
         [datetime]$Now
     )
 
-    if ($Now.TimeOfDay -lt [TimeSpan]'20:00:00') {
-        return $Now.Date.AddDays(-1).AddHours(20)
+    $baselineTime = $script:Config.incremental_baseline_time
+
+    if ($Now.TimeOfDay -lt $baselineTime) {
+        return $Now.Date.AddDays(-1).Add($baselineTime)
     }
 
-    return $Now.Date.AddHours(20)
+    return $Now.Date.Add($baselineTime)
 }
 
 function Get-NarvikPendingVMs {

@@ -29,6 +29,22 @@ function Get-NarvikConfigDayList {
     return , $days.ToArray()
 }
 
+function ConvertTo-NarvikConfigTime {
+    param(
+        $Value,
+        [Parameter(Mandatory = $true)]
+        [string]$Key
+    )
+
+    # 24-hour HH:mm local time from 00:00 to 23:59.
+    $text = [string]$Value
+    if ($text -notmatch '^([01][0-9]|2[0-3]):[0-5][0-9]$') {
+        throw [System.Exception]::new("Configuration key '$Key' must be a time in HH:mm format from 00:00 to 23:59, not '$text'.")
+    }
+
+    return [TimeSpan]::new([int]$text.Substring(0, 2), [int]$text.Substring(3, 2), 0)
+}
+
 function Import-NarvikConfig {
     param(
         [string]$Path
@@ -83,7 +99,8 @@ function Import-NarvikConfig {
         'max_backup_threads',
         'full_backup_unrestricted_days',
         'full_backup_limited_days',
-        'full_backup_limited_until'
+        'full_backup_limited_until',
+        'incremental_baseline_time'
     )
 
     foreach ($propertyName in $config.PSObject.Properties.Name) {
@@ -467,12 +484,13 @@ function Import-NarvikConfig {
     # ignored entirely, even when present.
     $fullBackupLimitedUntil = $null
     if ($fullBackupLimitedDays.Count -gt 0) {
-        $limitedUntilValue = [string](Get-NarvikConfigValue -Config $config -Key 'full_backup_limited_until' -Required)
-        if ($limitedUntilValue -notmatch '^([01][0-9]|2[0-3]):[0-5][0-9]$') {
-            throw [System.Exception]::new("Configuration key 'full_backup_limited_until' must be a time in HH:mm format from 00:00 to 23:59, not '$limitedUntilValue'.")
-        }
-        $fullBackupLimitedUntil = [TimeSpan]::new([int]$limitedUntilValue.Substring(0, 2), [int]$limitedUntilValue.Substring(3, 2), 0)
+        $limitedUntilValue = Get-NarvikConfigValue -Config $config -Key 'full_backup_limited_until' -Required
+        $fullBackupLimitedUntil = ConvertTo-NarvikConfigTime -Value $limitedUntilValue -Key 'full_backup_limited_until'
     }
+
+    # Nightly baseline for incremental backups: a VM is pending when its last
+    # backup is older than the most recent occurrence of this time. Always required.
+    $incrementalBaselineTime = ConvertTo-NarvikConfigTime -Value (Get-NarvikConfigValue -Config $config -Key 'incremental_baseline_time' -Required) -Key 'incremental_baseline_time'
 
     return [pscustomobject]@{
         debug                                 = $debug
@@ -505,6 +523,7 @@ function Import-NarvikConfig {
         full_backup_unrestricted_days         = $fullBackupUnrestrictedDays
         full_backup_limited_days              = $fullBackupLimitedDays
         full_backup_limited_until             = $fullBackupLimitedUntil
+        incremental_baseline_time             = $incrementalBaselineTime
     }
 }
 
