@@ -512,10 +512,6 @@ function Update-NarvikEligibility {
             Write-NarvikLog -Level INFO -Message "VM '$($entry.VM.Name)' is not eligible: $(@($entry.Reasons) -join '; ')."
         }
         Write-NarvikLog -Level INFO -Message "Eligibility updated: $(@($script:EligibleVMs).Count) VM(s) eligible, $(@($script:NonEligibleVMs).Count) non-eligible."
-        Write-NarvikLog -Level DEBUG -Message "Eligible VMs:"
-        foreach ($vm in $script:EligibleVMs) {
-            Write-NarvikLog -Level DEBUG -Message "$($vm.Name)"
-        }
         $script:NonEligibleSignature = $signature
     }
 
@@ -523,6 +519,16 @@ function Update-NarvikEligibility {
 
     $eligibilityMs = [math]::Round(((Get-Date) - $eligibilityStart).TotalMilliseconds)
     Write-NarvikLog -Level DEBUG -Message "Eligibility processing took $eligibilityMs ms."
+    Write-NarvikLog -Level DEBUG -Message "Eligible VMs:"
+    foreach ($vm in $script:EligibleVMs) {
+        Write-NarvikLog -Level DEBUG -Message "$($vm.Name)"
+    }
+
+    $pendingVMs = @(Get-NarvikPendingVMs -Now (Get-Date))
+    Write-NarvikLog -Level DEBUG -Message "Pending VMs:"
+    foreach ($vm in $pendingVMs) {
+        Write-NarvikLog -Level DEBUG -Message "$($vm.Name)"
+    }
 
     if ($SendAlerts) {
         Send-NarvikDuplicateNameAlerts
