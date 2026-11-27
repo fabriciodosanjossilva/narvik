@@ -848,7 +848,6 @@ function Get-NarvikVCenterData {
             # VMware Live Site Recovery placeholders are ignored silently. Templates are
             # kept in the inventory and remain subject to the normal eligibility rules.
             if (Test-NarvikSiteRecoveryPlaceholder -VMConfig $vmCandidate.Config) {
-                Write-NarvikLog -Level DEBUG -Message "VM '$([string]$vmCandidate.Name)' is a VMware Live Site Recovery placeholder; skipped."
                 continue
             }
 
