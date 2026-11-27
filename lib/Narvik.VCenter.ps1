@@ -270,7 +270,7 @@ function Get-NarvikVCenterData {
 
     try {
         $connection = Connect-NarvikVCenter
-        Write-NarvikLog -Level DEBUG -Message "vCenter connected in $($collectionTimer.ElapsedMilliseconds) ms (since collection start)."
+        Write-NarvikLog -Level DEBUG -Message "vCenter connected in $($collectionTimer.ElapsedMilliseconds) ms."
         $stepTimer = [System.Diagnostics.Stopwatch]::StartNew()
 
         # One inventory cmdlet per entity type, instead of a single virtual
@@ -646,7 +646,7 @@ function Get-NarvikVCenterData {
         foreach ($unknownEntry in $unknownPriorityEntries) {
             Write-NarvikLog -Level WARNING -Message ([string]$unknownEntry.Message)
         }
-        Write-NarvikLog -Level DEBUG -Message "Host, cluster and resource pool maps built in $($postTagTimer.ElapsedMilliseconds) ms since tag collection."
+        Write-NarvikLog -Level DEBUG -Message "Host, cluster and resource pool maps built in $($postTagTimer.ElapsedMilliseconds) ms."
 
         # Datastore name -> MoRef. Disks name their datastore in Filename
         # ('[name] folder/disk.vmdk'), so this map resolves it without reading
@@ -730,7 +730,7 @@ function Get-NarvikVCenterData {
             })
         }
 
-        Write-NarvikLog -Level DEBUG -Message "Datastore clusters mapped in $($postTagTimer.ElapsedMilliseconds) ms since tag collection ($($datastoreClusterObjects.Count) cluster(s))."
+        Write-NarvikLog -Level DEBUG -Message "Datastore clusters mapped in $($postTagTimer.ElapsedMilliseconds) ms ($($datastoreClusterObjects.Count) cluster(s))."
         # One batched read for every VM and template (Get-View returns both): the
         # placeholder flag (Config.ManagedBy), the template Notes (Config.Annotation)
         # and the template resource pool. Replaces one ExtensionData round trip per
@@ -833,7 +833,7 @@ function Get-NarvikVCenterData {
             }
         }
 
-        Write-NarvikLog -Level DEBUG -Message "Starting VM processing for $($vmCandidates.Count) candidate(s) after $($postTagTimer.ElapsedMilliseconds) ms since tag collection."
+        Write-NarvikLog -Level DEBUG -Message "Starting VM processing for $($vmCandidates.Count) candidate(s) after $($postTagTimer.ElapsedMilliseconds) ms."
         $vmProcessTimer = [System.Diagnostics.Stopwatch]::StartNew()
         $diskTimer = [System.Diagnostics.Stopwatch]::new()
         $vmProcessed = 0
@@ -1154,7 +1154,7 @@ function Get-NarvikVCenterData {
         $sortedVms = @($vms | Sort-Object -Property FolderPath, Name)
         $buildMs = $collectionTimer.ElapsedMilliseconds
         Write-NarvikLog -Level DEBUG -Message "vCenter inventory timing: inventory reads $readMs ms, tag collection $tagReadMs ms, inventory build $buildMs ms."
-        Write-NarvikLog -Level DEBUG -Message "vCenter inventory collection total: $([math]::Round(((Get-Date) - $collectStart).TotalSeconds, 1)) s since collection start."
+        Write-NarvikLog -Level DEBUG -Message "vCenter inventory collection total: $([math]::Round(((Get-Date) - $collectStart).TotalSeconds, 1)) s."
 
         return [pscustomobject]@{
             CollectedAt          = $collectStart
