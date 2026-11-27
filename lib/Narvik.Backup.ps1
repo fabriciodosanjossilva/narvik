@@ -684,10 +684,10 @@ function Write-NarvikStats {
         Write-NarvikLog -Level DEBUG -Message "Inventory cache collected at $($script:VCache.CollectedAt.ToString('yyyy-MM-dd HH:mm:ss')) (age $cacheAgeMinutes minute(s)); incremental baseline $baselineText; pending $($pending.Count) VM(s)."
     }
 
-    Write-NarvikLog -Level INFO -Message "Pending waiting: $($waiting.Count) VM(s), $([math]::Round($waitingSize, 2)) GB."
-    foreach ($vm in $waiting) {
-        Write-NarvikLog -Level DEBUG -Message "Pending VM: $($vm.Name)"
+    foreach ($vm in @($waiting | Sort-Object -Property Name)) {
+        Write-NarvikLog -Level DEBUG -Message "Pending VM: $($vm.Name), $([math]::Round([double]$vm.TotalSizeGB, 2)) GB"
     }
+    Write-NarvikLog -Level INFO -Message "Pending waiting: $($waiting.Count) VM(s), $([math]::Round($waitingSize, 2)) GB."
 
     foreach ($job in @($activeIncremental | Sort-Object -Property StartTime)) {
         $elapsedMinutes = [math]::Round(($now - $job.StartTime).TotalMinutes, 1)

@@ -528,8 +528,8 @@ function Update-NarvikEligibility {
 
     $pendingVMs = @(Get-NarvikPendingVMs -Now (Get-Date))
     Write-NarvikLog -Level DEBUG -Message "Pending VMs:"
-    foreach ($vm in $pendingVMs) {
-        Write-NarvikLog -Level DEBUG -Message "$($vm.Name)"
+    foreach ($vm in @($pendingVMs | Sort-Object -Property Name)) {
+        Write-NarvikLog -Level DEBUG -Message "$($vm.Name), $([math]::Round([double]$vm.TotalSizeGB, 2)) GB"
     }
 
     if ($SendAlerts) {
