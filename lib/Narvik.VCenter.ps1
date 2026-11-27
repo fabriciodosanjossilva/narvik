@@ -839,9 +839,6 @@ function Get-NarvikVCenterData {
         $vmProcessed = 0
         foreach ($vmCandidate in $vmCandidates) {
             $vmProcessed++
-            if ($vmProcessed % 100 -eq 0) {
-                Write-NarvikLog -Level DEBUG -Message "VM processing: $vmProcessed/$($vmCandidates.Count) candidate(s) in $($vmProcessTimer.ElapsedMilliseconds) ms (disk processing $($diskTimer.ElapsedMilliseconds) ms so far)."
-            }
 
             if ($null -eq $vmCandidate.Config) {
                 Write-NarvikLog -Level DEBUG -Message "VM '$([string]$vmCandidate.Name)' has no configuration data; skipped."
@@ -931,7 +928,7 @@ function Get-NarvikVCenterData {
                 if ($null -ne $noteBackups.Full) {
                     $notesTimestampDetail = " (full $($noteBackups.Full.ToString('yyyy-MM-dd HH:mm:ss')))"
                 }
-                Write-NarvikLog -Level DEBUG -Message "VM '$vmName': VM Notes timestamp $notesTimestampText$notesTimestampDetail."
+                Write-NarvikLog -Level DEBUG -Message "Notes last backup timestamp: '$vmName': $notesTimestampText$notesTimestampDetail."
                 # The Notes block is the source for the last incremental, but it
                 # is only taken when it is newer than the value already known; an
                 # older Notes timestamp never moves the last backup backwards. Only
@@ -944,7 +941,7 @@ function Get-NarvikVCenterData {
                 $lastBackup = $noteBackups.Incremental
                 if ($null -ne $knownLastBackup -and $noteBackups.Incremental -le $knownLastBackup) {
                     $lastBackup = $knownLastBackup
-                    Write-NarvikLog -Level DEBUG -Message "VM '$vmName': ignoring Notes timestamp $notesTimestampText because it is not newer than the known last backup $($knownLastBackup.ToString('yyyy-MM-dd HH:mm:ss'))."
+                    Write-NarvikLog -Level DEBUG -Message "Notes last backup timestamp: '$vmName': ignoring $notesTimestampText because it is not newer than the known last backup $($knownLastBackup.ToString('yyyy-MM-dd HH:mm:ss'))."
                 }
                 if ($null -ne $noteBackups.Full) {
                     $currentLastFull = $null
@@ -954,16 +951,16 @@ function Get-NarvikVCenterData {
                     if ($null -eq $currentLastFull -or $noteBackups.Full -gt $currentLastFull) {
                         $script:LastFull[$vmName] = $noteBackups.Full
                         $lastFullChanged = $true
-                        Write-NarvikLog -Level INFO -Message "VM '$vmName' Notes report a full backup at $($noteBackups.Full.ToString('yyyy-MM-dd HH:mm:ss')); last full control updated."
+                        Write-NarvikLog -Level DEBUG -Message "Notes last backup timestamp: '$vmName' : full backup at $($noteBackups.Full.ToString('yyyy-MM-dd HH:mm:ss'))."
                     }
                 }
             }
             elseif (-not [string]::IsNullOrWhiteSpace($notes)) {
                 $notesParseWarnings++
-                Write-NarvikLog -Level DEBUG -Message "VM '$vmName': VM Notes timestamp none; the Notes have no valid <Last Backup (IBM Spectrum Protect)> block, so its last backup is unknown."
+                Write-NarvikLog -Level DEBUG -Message "Notes last backup timestamp: '$vmName': no valid <Last Backup> block, so its last backup is unknown."
             }
             else {
-                Write-NarvikLog -Level DEBUG -Message "VM '$vmName': VM Notes timestamp none; the VM has no Notes."
+                Write-NarvikLog -Level DEBUG -Message "Notes last backup timestamp: '$vmName': no Notes."
             }
 
             $disks = [System.Collections.Generic.List[object]]::new()

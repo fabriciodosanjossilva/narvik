@@ -510,8 +510,9 @@ function Update-NarvikEligibility {
     $signature = $signatureParts -join "`n"
 
     if ($signature -ne $script:NonEligibleSignature) {
+        Write-NarvikLog -Level INFO -Message "Not eligible VMs:"
         foreach ($entry in $script:NonEligibleVMs) {
-            Write-NarvikLog -Level INFO -Message "VM '$($entry.VM.Name)' is not eligible: $(@($entry.Reasons) -join '; ')."
+            Write-NarvikLog -Level INFO -Message "Not eligible: '$($entry.VM.Name)': $(@($entry.Reasons) -join '; ')."
         }
         Write-NarvikLog -Level INFO -Message "Eligibility updated: $(@($script:EligibleVMs).Count) VM(s) eligible, $(@($script:NonEligibleVMs).Count) non-eligible."
         $script:NonEligibleSignature = $signature
@@ -520,16 +521,16 @@ function Update-NarvikEligibility {
     Write-NarvikMonitoringFiles
 
     $eligibilityMs = [math]::Round(((Get-Date) - $eligibilityStart).TotalMilliseconds)
-    Write-NarvikLog -Level DEBUG -Message "Eligibility processing took $eligibilityMs ms."
-    Write-NarvikLog -Level DEBUG -Message "Eligible VMs:"
+    Write-NarvikLog -Level INFO -Message "Eligibility processing took $eligibilityMs ms."
+    Write-NarvikLog -Level INFO -Message "Eligible VMs:"
     foreach ($vm in $script:EligibleVMs) {
-        Write-NarvikLog -Level DEBUG -Message "$($vm.Name)"
+        Write-NarvikLog -Level INFO -Message "Eligible: $($vm.Name)"
     }
 
     $pendingVMs = @(Get-NarvikPendingVMs -Now (Get-Date))
-    Write-NarvikLog -Level DEBUG -Message "Pending VMs:"
+    Write-NarvikLog -Level INFO -Message "Pending VMs:"
     foreach ($vm in @($pendingVMs | Sort-Object -Property Name)) {
-        Write-NarvikLog -Level DEBUG -Message "$($vm.Name), $([math]::Round([double]$vm.TotalSizeGB, 2)) GB"
+        Write-NarvikLog -Level INFO -Message "Pending: $($vm.Name), $([math]::Round([double]$vm.TotalSizeGB, 2)) GB"
     }
 
     if ($SendAlerts) {
