@@ -689,12 +689,12 @@ function Write-NarvikStats {
         Write-NarvikLog -Level DEBUG -Message "Pending VM: $($vm.Name)"
     }
 
-    foreach ($job in @($activeIncremental | Sort-Object -Property VmName)) {
+    foreach ($job in @($activeIncremental | Sort-Object -Property StartTime)) {
         $elapsedMinutes = [math]::Round(($now - $job.StartTime).TotalMinutes, 1)
         Write-NarvikLog -Level INFO -Message "Active pending backup: VM '$($job.VmName)', size $($job.VM.TotalSizeGB) GB, started $($job.StartTime.ToString('yyyy-MM-dd HH:mm:ss')), elapsed $elapsedMinutes minute(s), PID $($job.Process.Id)."
     }
 
-    foreach ($job in @($activeFull | Sort-Object -Property VmName)) {
+    foreach ($job in @($activeFull | Sort-Object -Property StartTime)) {
         $elapsedMinutes = [math]::Round(($now - $job.StartTime).TotalMinutes, 1)
         Write-NarvikLog -Level INFO -Message "Active full backup: VM '$($job.VmName)', size $($job.VM.TotalSizeGB) GB, started $($job.StartTime.ToString('yyyy-MM-dd HH:mm:ss')), elapsed $elapsedMinutes minute(s), PID $($job.Process.Id)."
     }
