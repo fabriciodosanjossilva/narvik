@@ -29,6 +29,13 @@ behavior (backup eligibility rules, scheduling, alerting, error handling); read 
 changing logic, since the exact wording there (error codes, thresholds, precedence rules)
 is the spec.
 
+## Language
+
+All messages (log, alert, console, and error text) and all identifiers (variables,
+parameters, functions, and file names) must be written in English. Comments and
+documentation in this repo are also kept in English. When you touch existing
+non-English text, convert it to English.
+
 ## Running / exercising the code
 
 - Requires Windows PowerShell 5.1+ and the `VMware.VimAutomation.Core` PowerCLI module

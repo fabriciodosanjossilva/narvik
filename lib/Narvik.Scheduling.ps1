@@ -205,7 +205,7 @@ function Write-NarvikSharedHostDebug {
     )
 
     $sharing = Get-NarvikActiveJobCountForHost -HostName $Vm.HostName
-    Write-NarvikLog -Level DEBUG -Message "Alocando backup concorrente em um mesmo host por não haver mais opções. $Kind of VM '$($Vm.Name)' on host '$($Vm.HostName)': active backups on this host $sharing/$($script:SharedHostMaxBackups)."
+    Write-NarvikLog -Level DEBUG -Message "Allocating a concurrent backup on the same host because no other option is left. $Kind of VM '$($Vm.Name)' on host '$($Vm.HostName)': active backups on this host $sharing/$($script:SharedHostMaxBackups)."
 }
 
 function Get-NarvikFullCandidates {
