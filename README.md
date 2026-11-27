@@ -31,7 +31,10 @@ Narvik is a backup automation for "IBM Storage Protect for VMWare" on Windows Se
   required); before that time of day the baseline is the previous day's occurrence.
   The block must contain `Status='Successful'`, a `Last Run Time` in
   `MM/DD/YYYY HH:MM:SS` format and a `Type`; line endings are treated as
-  spaces. A Full block also counts as the last incremental.
+  spaces. A Full block also counts as the last incremental. A timestamp read from
+  the Notes is only used when it is newer than the last backup Narvik already knows
+  for that VM (from the previous inventory snapshot or a successful backup in this
+  run); an older Notes timestamp is ignored. The same rule applies to the last full.
 - Automatic full backups: repeats an "Incremental Forever - Full" backup when
   the last full, read from a Notes block whose `Type` ends in `- Full` or
   recorded after a successful full backup, is more than `full_backup_max_age_days`

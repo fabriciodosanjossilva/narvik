@@ -821,6 +821,18 @@ function Get-NarvikVCenterData {
         $notesParseWarnings = 0
         $lastFullChanged = $false
 
+        # Last incremental values already known from the previous snapshot (the
+        # snapshot still in $script:VCache during this call). A Notes timestamp
+        # only replaces them when it is newer.
+        $knownLastBackupByName = @{}
+        if ($null -ne $script:VCache) {
+            foreach ($knownVm in @($script:VCache.VMs)) {
+                if ($null -ne $knownVm -and $null -ne $knownVm.LastBackup) {
+                    $knownLastBackupByName[[string]$knownVm.Name] = $knownVm.LastBackup
+                }
+            }
+        }
+
         Write-NarvikLog -Level DEBUG -Message "Starting VM processing for $($vmCandidates.Count) candidate(s) after $($postTagTimer.ElapsedMilliseconds) ms since tag collection."
         $vmProcessTimer = [System.Diagnostics.Stopwatch]::StartNew()
         $diskTimer = [System.Diagnostics.Stopwatch]::new()
@@ -920,16 +932,26 @@ function Get-NarvikVCenterData {
                     $notesTimestampDetail = " (full $($noteBackups.Full.ToString('yyyy-MM-dd HH:mm:ss')))"
                 }
                 Write-NarvikLog -Level DEBUG -Message "VM '$vmName': VM Notes timestamp $notesTimestampText$notesTimestampDetail."
-                # The Notes block is authoritative for the last incremental;
-                # only a Full block is authoritative for the last full. An
-                # incremental backup never overwrites the last full control.
+                # The Notes block is the source for the last incremental, but it
+                # is only taken when it is newer than the value already known; an
+                # older Notes timestamp never moves the last backup backwards. Only
+                # a Full block updates the last full, and only when it is newer.
+                # An incremental backup never overwrites the last full control.
+                $knownLastBackup = $null
+                if ($knownLastBackupByName.ContainsKey($vmName)) {
+                    $knownLastBackup = $knownLastBackupByName[$vmName]
+                }
                 $lastBackup = $noteBackups.Incremental
+                if ($null -ne $knownLastBackup -and $noteBackups.Incremental -le $knownLastBackup) {
+                    $lastBackup = $knownLastBackup
+                    Write-NarvikLog -Level DEBUG -Message "VM '$vmName': ignoring Notes timestamp $notesTimestampText because it is not newer than the known last backup $($knownLastBackup.ToString('yyyy-MM-dd HH:mm:ss'))."
+                }
                 if ($null -ne $noteBackups.Full) {
                     $currentLastFull = $null
                     if ($script:LastFull.ContainsKey($vmName)) {
                         $currentLastFull = $script:LastFull[$vmName]
                     }
-                    if ($null -eq $currentLastFull -or $currentLastFull -ne $noteBackups.Full) {
+                    if ($null -eq $currentLastFull -or $noteBackups.Full -gt $currentLastFull) {
                         $script:LastFull[$vmName] = $noteBackups.Full
                         $lastFullChanged = $true
                         Write-NarvikLog -Level INFO -Message "VM '$vmName' Notes report a full backup at $($noteBackups.Full.ToString('yyyy-MM-dd HH:mm:ss')); last full control updated."

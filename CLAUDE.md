@@ -191,7 +191,8 @@ Backup execution:
   `-VMBACKUPUPDATEGUID -mode IFFull`).
 - Last-backup timestamps are read back from the VM's vCenter Notes field
   (`ConvertFrom-NarvikVmNotes`, parsing the `<Last Backup (IBM Spectrum Protect)>`
-  block), not from local state — local state (`$script:State`, `$script:LastFull`,
+  block), but a Notes timestamp only replaces the known value when it is newer (see
+  `Get-NarvikVCenterData`); not from local state — local state (`$script:State`, `$script:LastFull`,
   `$script:IndependentDisks`) only tracks failure backoff, duplicate-GUID flags, alert
   suppression timestamps, and independent-disk tracking, persisted as JSON under the
   root directory.
