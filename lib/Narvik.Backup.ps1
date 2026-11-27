@@ -685,7 +685,7 @@ function Write-NarvikStats {
     }
 
     foreach ($vm in @($waiting | Sort-Object -Property Name)) {
-        Write-NarvikLog -Level DEBUG -Message "Pending VM: $($vm.Name), $([math]::Round([double]$vm.TotalSizeGB, 2)) GB"
+        Write-NarvikLog -Level INFO -Message "Pending VM: $($vm.Name), $([math]::Round([double]$vm.TotalSizeGB, 2)) GB"
     }
     Write-NarvikLog -Level INFO -Message "Pending waiting: $($waiting.Count) VM(s), $([math]::Round($waitingSize, 2)) GB."
 

@@ -138,9 +138,6 @@ function Test-NarvikVmAllocable {
         [switch]$Quiet
     )
 
-    Write-NarvikLog -Level DEBUG -Message "---------------------------------------"
-    Write-NarvikLog -Level DEBUG -Message "Allocation analysis:"
-
     if (Test-NarvikVmActive -VmName $Vm.Name) {
         if (-not $Quiet) { Write-NarvikLog -Level DEBUG -Message "Allocation analysis: '$($Vm.Name)' already has an active $Kind; skipping." }
         return $false
