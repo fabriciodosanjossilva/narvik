@@ -1,3 +1,32 @@
+function Get-NarvikConfigPositiveInteger {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Config,
+        [Parameter(Mandatory = $true)]
+        [string]$Key,
+        [Parameter(Mandatory = $true)]
+        [int]$Default
+    )
+
+    # Optional key: an absent or empty value yields the default; otherwise it must be
+    # a positive integer.
+    $value = Get-NarvikConfigValue -Config $Config -Key $Key
+    if ($null -eq $value -or [string]::IsNullOrWhiteSpace([string]$value)) {
+        return $Default
+    }
+
+    $text = ([string]$value).Trim()
+    if ($text -notmatch '^[0-9]+$') {
+        throw [System.Exception]::new("Configuration key '$Key' must be a positive integer, not '$text'.")
+    }
+    $number = [int]$text
+    if ($number -lt 1) {
+        throw [System.Exception]::new("Configuration key '$Key' must be at least 1.")
+    }
+
+    return $number
+}
+
 function Get-NarvikConfigDayList {
     param(
         [Parameter(Mandatory = $true)]
@@ -101,7 +130,10 @@ function Import-NarvikConfig {
         'full_backup_limited_days',
         'full_backup_limited_until',
         'full_backup_max_age_days',
-        'incremental_baseline_time'
+        'incremental_baseline_time',
+        'backup_error_backoff_factor',
+        'backup_error_backoff_base_minutes',
+        'backup_error_backoff_max_minutes'
     )
 
     foreach ($propertyName in $config.PSObject.Properties.Name) {
@@ -521,6 +553,16 @@ function Import-NarvikConfig {
     # backup is older than the most recent occurrence of this time. Always required.
     $incrementalBaselineTime = ConvertTo-NarvikConfigTime -Value (Get-NarvikConfigValue -Config $config -Key 'incremental_baseline_time' -Required) -Key 'incremental_baseline_time'
 
+    # Failure backoff after a failed backup. Optional; the defaults reproduce the
+    # built-in schedule (first retry after 1 minute, quadrupling, capped at 12 hours).
+    # Each value must be a positive integer.
+    $backoffFactor = Get-NarvikConfigPositiveInteger -Config $config -Key 'backup_error_backoff_factor' -Default 4
+    $backoffBaseMinutes = Get-NarvikConfigPositiveInteger -Config $config -Key 'backup_error_backoff_base_minutes' -Default 1
+    $backoffMaxMinutes = Get-NarvikConfigPositiveInteger -Config $config -Key 'backup_error_backoff_max_minutes' -Default 720
+    if ($backoffBaseMinutes -gt $backoffMaxMinutes) {
+        throw [System.Exception]::new("Configuration key 'backup_error_backoff_base_minutes' ($backoffBaseMinutes) must not exceed 'backup_error_backoff_max_minutes' ($backoffMaxMinutes).")
+    }
+
     return [pscustomobject]@{
         debug                                 = $debug
         check_administrator_privilege         = $checkAdministratorPrivilege
@@ -554,6 +596,9 @@ function Import-NarvikConfig {
         full_backup_limited_until             = $fullBackupLimitedUntil
         full_backup_max_age_days              = $fullBackupMaxAgeDays
         incremental_baseline_time             = $incrementalBaselineTime
+        backup_error_backoff_factor           = $backoffFactor
+        backup_error_backoff_base_minutes     = $backoffBaseMinutes
+        backup_error_backoff_max_minutes      = $backoffMaxMinutes
     }
 }
 

@@ -50,5 +50,8 @@
     "friday"
   ],
   "full_backup_limited_until": "08:00",
-  "full_backup_max_age_days": 30
+  "full_backup_max_age_days": 30,
+  "backup_error_backoff_factor": 4,
+  "backup_error_backoff_base_minutes": 1,
+  "backup_error_backoff_max_minutes": 720
 }

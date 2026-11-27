@@ -77,14 +77,14 @@ function Get-NarvikBackoffUntil {
 
     $exponent = $count - 1
 
-    # The first retry comes after one minute and quadruples on every further
-    # failure.
-    $minutes = [math]::Pow(4, $exponent)
+    # The first retry comes after backup_error_backoff_base_minutes and the delay
+    # is multiplied by backup_error_backoff_factor on every further failure.
+    $minutes = $script:Config.backup_error_backoff_base_minutes * [math]::Pow($script:Config.backup_error_backoff_factor, $exponent)
 
-    # Cap the backoff at 12 hours (720 minutes) so a VM that keeps failing
-    # is still retried at least twice a day.
-    if ($minutes -gt 720) {
-        $minutes = 720
+    # Cap the backoff at backup_error_backoff_max_minutes so a VM that keeps
+    # failing is still retried regularly.
+    if ($minutes -gt $script:Config.backup_error_backoff_max_minutes) {
+        $minutes = $script:Config.backup_error_backoff_max_minutes
     }
 
     return $entry.last_attempt.AddMinutes($minutes)
