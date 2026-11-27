@@ -132,16 +132,27 @@ function Import-NarvikConfig {
     # Folder of the executable; used as the child process working directory at launch.
     $dsmcDir = [System.IO.Path]::GetDirectoryName($dsmcPath)
 
-    $dsmcOptFile = $null
-    $dsmcOptFileValue = [string](Get-NarvikConfigValue -Config $config -Key 'dsmc_opt_file' -Default '')
-    if (-not [string]::IsNullOrWhiteSpace($dsmcOptFileValue)) {
-        $dsmcOptFile = Resolve-NarvikPath -Path $dsmcOptFileValue -BasePath $script:RootPath
-        if (-not (Test-Path -LiteralPath $dsmcOptFile -PathType Leaf)) {
-            throw [System.Exception]::new("dsmc option file not found: '$dsmcOptFile'.")
-        }
+    $dsmcOptFileValue = [string](Get-NarvikConfigValue -Config $config -Key 'dsmc_opt_file' -Required)
+    if ([string]::IsNullOrWhiteSpace($dsmcOptFileValue)) {
+        throw [System.Exception]::new("Configuration key 'dsmc_opt_file' must not be empty.")
+    }
+    $dsmcOptFile = Resolve-NarvikPath -Path $dsmcOptFileValue -BasePath $script:RootPath
+    if (-not (Test-Path -LiteralPath $dsmcOptFile -PathType Leaf)) {
+        throw [System.Exception]::new("dsmc option file not found: '$dsmcOptFile'.")
+    }
+    # Opening the file (rather than reading it) verifies read access, including ACL denials.
+    try {
+        $optFileStream = [System.IO.File]::OpenRead($dsmcOptFile)
+        $optFileStream.Dispose()
+    }
+    catch {
+        throw [System.Exception]::new("dsmc option file is not readable: '$dsmcOptFile': $($_.Exception.Message)")
     }
 
-    $dsmcAsnodename = [string](Get-NarvikConfigValue -Config $config -Key 'dsmc_asnodename' -Default '')
+    $dsmcAsnodename = [string](Get-NarvikConfigValue -Config $config -Key 'dsmc_asnodename' -Required)
+    if ([string]::IsNullOrWhiteSpace($dsmcAsnodename)) {
+        throw [System.Exception]::new("Configuration key 'dsmc_asnodename' must not be empty.")
+    }
 
     $checkAdministratorPrivilege = ConvertTo-NarvikBoolean -Value (Get-NarvikConfigValue -Config $config -Key 'check_administrator_privilege' -Default $false) -KeyName 'check_administrator_privilege'
 

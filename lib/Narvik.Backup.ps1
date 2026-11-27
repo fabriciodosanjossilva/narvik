@@ -318,7 +318,7 @@ function Start-NarvikBackupJob {
     $safeName = ConvertTo-NarvikFileName -Name $vm.Name
     $logPath = Join-Path $dateDirectory ($now.ToString('HH_mm_ss') + '_' + $safeName + '.txt')
     $logPath = Get-NarvikUniquePath -Path $logPath
-    $errorPath = $logPath + '.stderr'
+    $errorPath = [System.IO.Path]::ChangeExtension($logPath, '.stderr.txt')
 
     $sanitizedName = ConvertTo-NarvikDsmcVmName -Name $vm.Name
     $duplicateGuid = $script:DuplicateGuid.ContainsKey($vm.Name)
@@ -353,13 +353,8 @@ function Start-NarvikBackupJob {
         [void]$arguments.Add('-preview')
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($script:Config.dsmc_opt_file)) {
-        [void]$arguments.Add('-optfile=' + (Quote-NarvikWindowsArgument -Argument $script:Config.dsmc_opt_file))
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($script:Config.dsmc_asnodename)) {
-        [void]$arguments.Add('-asnodename=' + (Quote-NarvikWindowsArgument -Argument $script:Config.dsmc_asnodename))
-    }
+    [void]$arguments.Add('-optfile=' + (Quote-NarvikWindowsArgument -Argument $script:Config.dsmc_opt_file))
+    [void]$arguments.Add('-asnodename=' + (Quote-NarvikWindowsArgument -Argument $script:Config.dsmc_asnodename))
 
     $argumentString = $arguments -join ' '
     $commandLine = (Quote-NarvikWindowsArgument -Argument ([string]$script:Config.dsmc_path)) + ' ' + $argumentString

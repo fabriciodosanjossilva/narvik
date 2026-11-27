@@ -188,7 +188,7 @@ Inventory and eligibility:
 
 Backup execution:
 - `Start-NarvikBackupJob` builds the `dsmc backup vm` command line (quoting via
-  `Quote-NarvikWindowsArgument`, optional `-optfile`/`-asnodename`/`-VMBACKUPUPDATEGUID`/
+  `Quote-NarvikWindowsArgument`, required `-optfile`/`-asnodename`, optional `-VMBACKUPUPDATEGUID`/
   `-mode IFFull`) and launches it as a background job, logging to a per-VM file under
   `log/vm/`.
 - `Complete-NarvikJobs`/`Read-NarvikJobOutput`/`Invoke-NarvikAnsErrorScan` monitor

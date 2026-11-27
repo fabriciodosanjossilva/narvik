@@ -52,8 +52,9 @@ Narvik is a backup automation for "IBM Storage Protect for VMWare" on Windows Se
   is absent or an empty string, no automatic full backup is scheduled at all. A full forced by the
   duplicate GUID rule (ANS1715E) still runs regardless of this key.
 - dsmc options: `dsmc_opt_file` adds `-optfile=<file>` to the backup command
-  and `dsmc_asnodename` adds `-asnodename=<name>`. Both are optional and are
-  omitted from the command line when not configured.
+  and `dsmc_asnodename` adds `-asnodename=<name>`. Both are required and must not
+  be empty. `dsmc_opt_file` is either an absolute path or relative to the root directory;
+  it must exist and be readable, otherwise the configuration is rejected.
 - `dsmc_path` is the `dsmc.exe` to run, either an absolute path or relative to the
   root directory. It must exist and have a `.exe` extension; the process starts with
   the executable's own folder as its working directory.
