@@ -138,37 +138,40 @@ function Test-NarvikVmAllocable {
         [switch]$Quiet
     )
 
+    Write-NarvikLog -Level DEBUG -Message "---------------------------------------"
+    Write-NarvikLog -Level DEBUG -Message "Allocation analysis:"
+
     if (Test-NarvikVmActive -VmName $Vm.Name) {
-        if (-not $Quiet) { Write-NarvikLog -Level DEBUG -Message "VM '$($Vm.Name)' already has an active $Kind; skipping." }
+        if (-not $Quiet) { Write-NarvikLog -Level DEBUG -Message "Allocation analysis: '$($Vm.Name)' already has an active $Kind; skipping." }
         return $false
     }
 
     if ([string]::IsNullOrWhiteSpace($Vm.HostName)) {
-        if (-not $Quiet) { Write-NarvikLog -Level DEBUG -Message "VM '$($Vm.Name)' has no host information; $Kind will not be started." }
+        if (-not $Quiet) { Write-NarvikLog -Level DEBUG -Message "Allocation analysis: '$($Vm.Name)' has no host information; $Kind will not be started." }
         return $false
     }
 
     if (Test-NarvikBackoffActive -VmName $Vm.Name -Now $Now) {
-        if (-not $Quiet) { Write-NarvikLog -Level DEBUG -Message "VM '$($Vm.Name)' is in failure backoff until $((Get-NarvikBackoffUntil -VmName $Vm.Name).ToString('yyyy-MM-dd HH:mm:ss')); $Kind skipped." }
+        if (-not $Quiet) { Write-NarvikLog -Level DEBUG -Message "Allocation analysis: '$($Vm.Name)' is in failure backoff until $((Get-NarvikBackoffUntil -VmName $Vm.Name).ToString('yyyy-MM-dd HH:mm:ss')); $Kind skipped." }
         return $false
     }
 
     if (-not $AllowSharedHost) {
         if (Test-NarvikHostActive -HostName $Vm.HostName) {
-            if (-not $Quiet) { Write-NarvikLog -Level DEBUG -Message "VM '$($Vm.Name)' shares host '$($Vm.HostName)' with an active backup; $Kind skipped." }
+            if (-not $Quiet) { Write-NarvikLog -Level DEBUG -Message "Allocation analysis: '$($Vm.Name)' shares host '$($Vm.HostName)' with an active backup; $Kind skipped." }
             return $false
         }
     }
     else {
         $hostCount = Get-NarvikActiveJobCountForHost -HostName $Vm.HostName
         if ($hostCount -ge $script:SharedHostMaxBackups) {
-            if (-not $Quiet) { Write-NarvikLog -Level DEBUG -Message "VM '$($Vm.Name)' is on host '$($Vm.HostName)', which already runs $hostCount backup(s) (limit $($script:SharedHostMaxBackups)); $Kind skipped." }
+            if (-not $Quiet) { Write-NarvikLog -Level DEBUG -Message "Allocation analysis: '$($Vm.Name)' is on host '$($Vm.HostName)', which already runs $hostCount backup(s) (limit $($script:SharedHostMaxBackups)); $Kind skipped." }
             return $false
         }
     }
 
     if (Test-NarvikClusterAtCapacity -Vm $Vm) {
-        if (-not $Quiet) { Write-NarvikLog -Level DEBUG -Message "VM '$($Vm.Name)' is in cluster '$($Vm.ClusterName)', which already has $(Get-NarvikClusterMaxThreadsSetting -ClusterName $Vm.ClusterName) active backup(s); $Kind skipped." }
+        if (-not $Quiet) { Write-NarvikLog -Level DEBUG -Message "Allocation analysis: '$($Vm.Name)' is in cluster '$($Vm.ClusterName)', which already has $(Get-NarvikClusterMaxThreadsSetting -ClusterName $Vm.ClusterName) active backup(s); $Kind skipped." }
         return $false
     }
 
