@@ -518,6 +518,28 @@ function Invoke-NarvikAnsErrorScan {
     }
 }
 
+function Get-NarvikAnsFragments {
+    # Returns, for every line containing an ANS<digits>E or ANS<digits>W code,
+    # the text from the first code match onward. Used to summarize dsmc failures.
+    param(
+        [string]$Content
+    )
+
+    $fragments = New-Object System.Collections.Generic.List[string]
+    if ([string]::IsNullOrEmpty($Content)) {
+        return ,$fragments.ToArray()
+    }
+
+    foreach ($line in ($Content -split "\r?\n")) {
+        $match = [regex]::Match($line, 'ANS\d+[EW]')
+        if ($match.Success) {
+            $fragments.Add($line.Substring($match.Index))
+        }
+    }
+
+    return ,$fragments.ToArray()
+}
+
 function Complete-NarvikJobs {
     $completedAny = $false
     $now = Get-Date
@@ -593,12 +615,12 @@ function Complete-NarvikJobs {
             }
             Write-NarvikLog -Level ERROR -Message "Backup failed for VM '$($job.VmName)' (PID $($job.Process.Id), $failureDetail)."
 
-            $tailLines = @($content -split "\r?\n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-            if ($tailLines.Count -gt 0) {
-                $tailStart = [math]::Max(0, $tailLines.Count - 15)
-                for ($index = $tailStart; $index -lt $tailLines.Count; $index++) {
-                    Write-NarvikLog -Level ERROR -Message "VM '$($job.VmName)' output: $($tailLines[$index])"
-                }
+            foreach ($fragment in @(Get-NarvikAnsFragments -Content $content)) {
+                Write-NarvikLog -Level INFO -Message "VM '$($job.VmName)' dsmc match: $fragment"
+            }
+
+            foreach ($contentLine in @($content -split "\r?\n")) {
+                Write-NarvikLog -Level DEBUG -Message "VM '$($job.VmName)' log: $contentLine"
             }
 
             Record-NarvikFailure -VmName $job.VmName -When $now

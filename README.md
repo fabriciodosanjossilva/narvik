@@ -94,6 +94,10 @@ Narvik is a backup automation for "IBM Storage Protect for VMWare" on Windows Se
   to the end of the line. The critical codes `ANS1030E`, `ANS1706E`,
   `ANS4169E` and `ANS4200E` are also emailed with the timestamp and the VM
   being backed up; the same error type is not emailed again for 6 hours.
+- Failed backup output: when a backup fails, every line of its output
+  containing an `ANS<digits>[EW]` code is logged at INFO as `dsmc match:`,
+  starting at the code and running to the end of the line. Right after, the
+  complete backup output is logged line by line at DEBUG.
 - Knows the special cases that snapshot backups cannot serve, and excludes
   (with an alert) VMs that have RDM disks, names unsupported by the backup
   command, duplicate names, disks whose size is not a multiple of 1 MiB,

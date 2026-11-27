@@ -193,7 +193,8 @@ Backup execution:
   `log/vm/`.
 - `Complete-NarvikJobs`/`Read-NarvikJobOutput`/`Invoke-NarvikAnsErrorScan` monitor
   running jobs, scan output for `ANS<digits>E` codes, and determine success purely from
-  exit code 0 plus "backed-up objects" appearing in the output. `ANS1715E` triggers the self-healing
+  exit code 0 plus "backed-up objects" appearing in the output. On failure, `Get-NarvikAnsFragments`
+  lines containing `ANS<digits>[EW]` are logged at INFO, then the full output at DEBUG. `ANS1715E` triggers the self-healing
   duplicate-GUID retry (`Set-NarvikDuplicateGuid` → next attempt adds
   `-VMBACKUPUPDATEGUID -mode IFFull`).
 - Last-backup timestamps are read back from the VM's vCenter Notes field
