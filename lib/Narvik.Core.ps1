@@ -66,7 +66,8 @@ function Write-NarvikAtomicText {
         }
 
         $tempPath = Join-Path $directory ('.narvik_' + [System.IO.Path]::GetRandomFileName())
-        $encoding = New-Object System.Text.UTF8Encoding -ArgumentList $false
+        # All files written by Narvik are UTF-8 with a byte order mark.
+        $encoding = New-Object System.Text.UTF8Encoding -ArgumentList $true
         [System.IO.File]::WriteAllText($tempPath, $Content, $encoding)
 
         try {

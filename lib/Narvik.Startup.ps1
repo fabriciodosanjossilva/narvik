@@ -1,3 +1,22 @@
+function New-NarvikUtf8Writer {
+    # Text writer for the main log: UTF-8 with a byte order mark. A byte order mark is
+    # written only when the file is created or is empty, never in the middle of a file.
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [switch]$Append
+    )
+
+    $encoding = [System.Text.UTF8Encoding]::new($true)
+    $mode = [System.IO.FileMode]::Create
+    if ($Append) {
+        $mode = [System.IO.FileMode]::Append
+    }
+    $stream = [System.IO.File]::Open($Path, $mode, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
+    return [System.IO.StreamWriter]::new($stream, $encoding)
+}
+
 function Initialize-NarvikLog {
     $logDirectory = Join-Path $script:RootPath 'log/narvik'
     $oldDirectory = Join-Path $logDirectory 'old'
@@ -23,7 +42,7 @@ function Initialize-NarvikLog {
 
     $script:LogFilePath = $logFile
     try {
-        $script:LogWriter = [System.IO.File]::CreateText($logFile)
+        $script:LogWriter = New-NarvikUtf8Writer -Path $logFile
         $script:LogWriter.AutoFlush = $true
 
         # Confirm the log file is really writable before stdout is turned off.
@@ -87,7 +106,7 @@ function Rotate-NarvikLog {
     }
     catch {
         try {
-            $script:LogWriter = [System.IO.File]::AppendText($currentLog)
+            $script:LogWriter = New-NarvikUtf8Writer -Path $currentLog -Append
             $script:LogWriter.AutoFlush = $true
         }
         catch {
@@ -97,7 +116,7 @@ function Rotate-NarvikLog {
     }
 
     try {
-        $script:LogWriter = [System.IO.File]::CreateText($currentLog)
+        $script:LogWriter = New-NarvikUtf8Writer -Path $currentLog
         $script:LogWriter.AutoFlush = $true
     }
     catch {
@@ -218,7 +237,8 @@ function Write-NarvikProcessLock {
     for ($attempt = 1; $attempt -le 3; $attempt++) {
         try {
             $stream = [System.IO.File]::Open($processFile, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::Read)
-            $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+            # UTF-8 with byte order mark: the preamble is written before the JSON text.
+            $bytes = [System.Text.Encoding]::UTF8.GetPreamble() + [System.Text.Encoding]::UTF8.GetBytes($json)
             $stream.Write($bytes, 0, $bytes.Length)
             $stream.Flush()
             $script:ProcessLockStream = $stream
@@ -285,7 +305,7 @@ function Initialize-Narvik {
 
     try {
         $probe = Join-Path $script:RootPath ('.narvik_write_test_' + [System.IO.Path]::GetRandomFileName())
-        [System.IO.File]::WriteAllText($probe, 'test')
+        [System.IO.File]::WriteAllText($probe, 'test', (New-Object System.Text.UTF8Encoding -ArgumentList $true))
         Remove-Item -LiteralPath $probe -Force -ErrorAction Stop
     }
     catch {

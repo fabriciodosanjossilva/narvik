@@ -542,10 +542,36 @@ function Update-NarvikEligibility {
     }
 }
 
+function Format-NarvikEligibleVmsDiscovery {
+    # Builds the content of monitoring/eligible_vms.txt: a discovery-style JSON array
+    # with one '{#VM_NAME}' entry per eligible VM, in $script:EligibleVMs order.
+    $crlf = "`r`n"
+    $names = @($script:EligibleVMs | ForEach-Object { [string]$_.Name })
+
+    $builder = New-Object System.Text.StringBuilder
+    [void]$builder.Append($crlf + $crlf + '[' + $crlf)
+    for ($i = 0; $i -lt $names.Count; $i++) {
+        $line = '{ "{#VM_NAME}" : "' + $names[$i] + '" }'
+        if ($i -lt $names.Count - 1) {
+            $line += ','
+        }
+        [void]$builder.Append($line + $crlf)
+    }
+    [void]$builder.Append(']' + $crlf + $crlf)
+
+    return $builder.ToString()
+}
+
 function Write-NarvikMonitoringFiles {
     $eligibleCount = @($script:EligibleVMs).Count
-    $eligibleNames = @($script:EligibleVMs | ForEach-Object { [string]$_.Name })
 
     Write-NarvikAtomicText -Path (Join-Path $script:MonitoringDir 'eligible_count.txt') -Content ($eligibleCount.ToString() + "`r`n")
-    Write-NarvikAtomicText -Path (Join-Path $script:MonitoringDir 'eligible_vms.txt') -Content (($eligibleNames -join "`r`n") + $(if ($eligibleNames.Count -gt 0) { "`r`n" } else { '' }))
+
+    # eligible_vms.txt is rewritten only when its content changes (or the file is missing).
+    $discoveryPath = Join-Path $script:MonitoringDir 'eligible_vms.txt'
+    $discoveryContent = Format-NarvikEligibleVmsDiscovery
+    if ($discoveryContent -ne $script:EligibleVmsFileContent -or -not (Test-Path -LiteralPath $discoveryPath -PathType Leaf)) {
+        Write-NarvikAtomicText -Path $discoveryPath -Content $discoveryContent
+        $script:EligibleVmsFileContent = $discoveryContent
+    }
 }

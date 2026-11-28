@@ -52,6 +52,8 @@ $script:LastVCenterAttempt = [datetime]::MinValue
 # wrapped List[object] then fails with "Argument types do not match". ::new() avoids that.
 $script:ActiveJobs = [System.Collections.Generic.List[object]]::new()
 $script:EligibleVMs = @()
+# Last content written to monitoring/eligible_vms.txt; the file is rewritten only when it changes.
+$script:EligibleVmsFileContent = $null
 $script:NonEligibleVMs = @()
 $script:PendingVMs = @()
 $script:DuplicateNameCases = @()
