@@ -577,27 +577,22 @@ function Complete-NarvikJobs {
 
         $objectsBackedUp = ($content -match 'Total number of objects backed up: +1')
         $success = ($null -ne $exitCode -and $exitCode -eq 0 -and $objectsBackedUp)
-        $logWriteTime = $now
-        try {
-            if (Test-Path -LiteralPath $job.LogPath -PathType Leaf) {
-                $logWriteTime = (Get-Item -LiteralPath $job.LogPath).LastWriteTime
-            }
-        }
-        catch {
-            $logWriteTime = $now
-        }
-
         if ($success) {
             Write-NarvikLog -Level INFO -Message "Backup completed successfully for VM '$($job.VmName)' (PID $($job.Process.Id), exit code 0)."
 
+            # The last backup is the time the backup started, not when it finished.
+            # The value is also recorded by VM name so that a vCenter snapshot that
+            # was being collected while this job ran still receives it after the swap.
+            $script:RecentCompletions[$job.VmName] = $job.StartTime
             try {
-                $job.VM.LastBackup = $logWriteTime
+                $job.VM.LastBackup = $job.StartTime
             }
             catch {
             }
 
             if ($content -match 'Incremental Forever - Full') {
-                $script:LastFull[$job.VmName] = $now
+                # Same rule as the last backup: the start time, not the completion time.
+                $script:LastFull[$job.VmName] = $job.StartTime
                 Save-NarvikLastFull
                 Write-NarvikLog -Level INFO -Message "Full backup recorded for VM '$($job.VmName)'."
             }

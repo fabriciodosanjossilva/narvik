@@ -60,6 +60,10 @@ $script:DatastoreClusterCases = @()
 $script:ManagementClassCases = @()
 $script:DiskSizeCases = @()
 $script:LastFull = @{}
+# Successful incremental backups by VM name: the backup start time. Applied to the next
+# vCenter snapshot so a refresh that was running during the backup keeps the value.
+# Entries are removed once the Notes timestamp is at least as new.
+$script:RecentCompletions = @{}
 $script:IndependentDisks = @()
 $script:DuplicateGuid = @{}
 # Maximum simultaneous backups on one ESXi host when the one-per-host rule is

@@ -833,6 +833,18 @@ function Get-NarvikVCenterData {
             }
         }
 
+        # Successful backups finished since the previous snapshot may not be in the
+        # Notes read for this snapshot yet. Their recorded start time is the known
+        # value when it is newer than the one from the previous snapshot.
+        foreach ($completedName in @($script:RecentCompletions.Keys)) {
+            $recordedStart = $script:RecentCompletions[$completedName]
+            if (-not $knownLastBackupByName.ContainsKey($completedName) -or $recordedStart -gt $knownLastBackupByName[$completedName]) {
+                $knownLastBackupByName[$completedName] = $recordedStart
+            }
+        }
+        # Reference time for rejecting Notes timestamps that lie in the future.
+        $notesReferenceTime = Get-Date
+
         Write-NarvikLog -Level DEBUG -Message "Starting VM processing for $($vmCandidates.Count) candidate(s) after $($postTagTimer.ElapsedMilliseconds) ms."
         $vmProcessTimer = [System.Diagnostics.Stopwatch]::StartNew()
         $diskTimer = [System.Diagnostics.Stopwatch]::new()
@@ -928,26 +940,41 @@ function Get-NarvikVCenterData {
                     $notesTimestampDetail = " (full $($noteBackups.Full.ToString('yyyy-MM-dd HH:mm:ss')))"
                 }
                 Write-NarvikLog -Level DEBUG -Message "Notes last backup timestamp: '$vmName': $notesTimestampText$notesTimestampDetail."
-                # The Notes block is the source for the last incremental, but it
-                # is only taken when it is newer than the value already known; an
-                # older Notes timestamp never moves the last backup backwards. Only
-                # a Full block updates the last full, and only when it is newer.
-                # An incremental backup never overwrites the last full control.
+                # The Notes block is the source for the last incremental, but it is
+                # only taken when it is newer than the value already known and is not
+                # in the future; otherwise the known value is kept. Only a Full block
+                # updates the last full, and only when it is newer. An incremental
+                # backup never overwrites the last full control.
                 $knownLastBackup = $null
                 if ($knownLastBackupByName.ContainsKey($vmName)) {
                     $knownLastBackup = $knownLastBackupByName[$vmName]
                 }
                 $lastBackup = $noteBackups.Incremental
-                if ($null -ne $knownLastBackup -and $noteBackups.Incremental -le $knownLastBackup) {
+                if ($noteBackups.Incremental -gt $notesReferenceTime) {
+                    $lastBackup = $knownLastBackup
+                    Write-NarvikLog -Level DEBUG -Message "Notes last backup timestamp: '$vmName': ignoring $notesTimestampText because it is in the future (now $($notesReferenceTime.ToString('yyyy-MM-dd HH:mm:ss')))."
+                }
+                elseif ($null -ne $knownLastBackup -and $noteBackups.Incremental -le $knownLastBackup) {
                     $lastBackup = $knownLastBackup
                     Write-NarvikLog -Level DEBUG -Message "Notes last backup timestamp: '$vmName': ignoring $notesTimestampText because it is not newer than the known last backup $($knownLastBackup.ToString('yyyy-MM-dd HH:mm:ss'))."
+                }
+                # Once Notes reflects the recorded backup start, the record is no longer needed.
+                if ($script:RecentCompletions.ContainsKey($vmName) -and $noteBackups.Incremental -le $notesReferenceTime -and $noteBackups.Incremental -ge $script:RecentCompletions[$vmName]) {
+                    [void]$script:RecentCompletions.Remove($vmName)
                 }
                 if ($null -ne $noteBackups.Full) {
                     $currentLastFull = $null
                     if ($script:LastFull.ContainsKey($vmName)) {
                         $currentLastFull = $script:LastFull[$vmName]
                     }
-                    if ($null -eq $currentLastFull -or $noteBackups.Full -gt $currentLastFull) {
+                    # Same rule as the incremental: ignored when in the future or not newer than known.
+                    if ($noteBackups.Full -gt $notesReferenceTime) {
+                        Write-NarvikLog -Level DEBUG -Message "Notes last full timestamp: '$vmName': ignoring $($noteBackups.Full.ToString('yyyy-MM-dd HH:mm:ss')) because it is in the future (now $($notesReferenceTime.ToString('yyyy-MM-dd HH:mm:ss')))."
+                    }
+                    elseif ($null -ne $currentLastFull -and $noteBackups.Full -le $currentLastFull) {
+                        Write-NarvikLog -Level DEBUG -Message "Notes last full timestamp: '$vmName': ignoring $($noteBackups.Full.ToString('yyyy-MM-dd HH:mm:ss')) because it is not newer than the known last full $($currentLastFull.ToString('yyyy-MM-dd HH:mm:ss'))."
+                    }
+                    else {
                         $script:LastFull[$vmName] = $noteBackups.Full
                         $lastFullChanged = $true
                         Write-NarvikLog -Level DEBUG -Message "Notes last backup timestamp: '$vmName' : full backup at $($noteBackups.Full.ToString('yyyy-MM-dd HH:mm:ss'))."
